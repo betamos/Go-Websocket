@@ -6,7 +6,9 @@ import (
 	"crypto/sha1"
 	//"encoding/base64"
 	"encoding/base64"
+	"encoding/binary"
 	"errors"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -55,12 +57,12 @@ func main() {
 	fmt.Println("Web socketaaa")
 	http.Handle("/", http.FileServer(http.Dir("web")))
 	http.HandleFunc("/myconn", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Println(r)
+		//fmt.Println(r)
 		var status int
 		secWSAccept, err := wsClientHandshake(w, r)
 		if err != nil {
 			fmt.Println(err)
-			w.Header().Set("Sec-WebSocket-Version", secWSVersion)
+			w.Header().Set("Sec-WebSocket-Version", strconv.Itoa(secWSVersion))
 			status = http.StatusBadRequest
 		} else {
 			// TODO: Map or list instead?
@@ -69,7 +71,86 @@ func main() {
 			w.Header().Set("Sec-WebSocket-Accept", secWSAccept)
 			status = http.StatusSwitchingProtocols
 		}
+		fmt.Printf("Close: %v\n", r.Close)
 		w.WriteHeader(status)
+		w.Write([]byte{0x4e})
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			fmt.Println("No hijack")
+		}
+		fmt.Println("header written")
+		conn, rw, err := hj.Hijack()
+		fmt.Println(conn, rw)
+		go func() {
+			// Read the frameHeader
+			for i := 0; i < 2; i++ {
+				var header frameHeader
+				if c, err := rw.ReadByte(); err != nil {
+					return // TODO
+				} else {
+					header.fin = c&fin != 0
+					header.rsv1 = c&rsv1 != 0
+					header.rsv2 = c&rsv2 != 0
+					header.rsv3 = c&rsv3 != 0
+					header.opCode = c & opCode
+				}
+
+				if c, err := rw.ReadByte(); err != nil {
+					return // TODO
+				} else {
+					header.mask = c&mask != 0
+					header.payloadLength = uint64(c & payloadLength7)
+				}
+				if header.payloadLength == 126 {
+					buf := make([]byte, 4)
+					if _, err := io.ReadFull(rw, buf); err != nil {
+						return // TODO
+					}
+					header.payloadLength = uint64(binary.BigEndian.Uint16(buf))
+				} else if header.payloadLength == 127 {
+					buf := make([]byte, 8)
+					if _, err := io.ReadFull(rw, buf); err != nil {
+						return // TODO
+					}
+					header.payloadLength = binary.BigEndian.Uint64(buf)
+				}
+				if header.mask {
+					header.maskingKey = make([]byte, 4)
+					if _, err := io.ReadFull(rw, header.maskingKey); err != nil {
+						return // TODO
+					}
+				}
+				fmt.Print(header)
+			}
+			return
+		}()
+		ping := []byte{
+			//0x81, // fin, rsv[0..2] = 0, opcode = text frame
+			//0x02,
+			//0x41,
+			//0x42,
+			//0x81,
+			0x89,
+			0x00,
+		}
+		rw.WriteString("\r\n")
+		fmt.Println("Flushed")
+		rw.Write(ping)
+		ab := []byte{
+			0x81, // fin, rsv[0..2] = 0, opcode = text frame
+			0x02,
+			0x41,
+			0x42,
+		}
+		bin := []byte{
+			0x82, // fin, rsv[0..2] = 0, opcode = text frame
+			0x02,
+			0x10,
+			0xff,
+		}
+		rw.Write(ab)
+		rw.Write(bin)
+		rw.Flush()
 	})
 	log.Fatal(http.ListenAndServe("localhost:8080", nil))
 }
@@ -112,8 +193,6 @@ func validateSecWebSocketKey(key string) (secWSAccept string, err error) {
 	} else {
 		h := sha1.New()
 		h.Write([]byte(key + guid)) // sha1(key + guid)
-		fmt.Println(key)
-		fmt.Printf("% x", h)
 		secWSAccept = base64.StdEncoding.EncodeToString(h.Sum(nil))
 	}
 	return
