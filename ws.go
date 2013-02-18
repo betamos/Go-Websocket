@@ -21,6 +21,22 @@ const (
 	minProtoMinor  = 1
 )
 
+// Bitmasks for protocol
+const (
+	fin                   = byte(0x80)
+	rsv1                  = byte(0x40)
+	rsv2                  = byte(0x20)
+	rsv3                  = byte(0x10)
+	opCode                = byte(0x0F)
+	opCodeContiuation     = byte(0x00)
+	opCodeText            = byte(0x01)
+	opCodeBinary          = byte(0x02)
+	opCodeConnectionClose = byte(0x08)
+	opCodePing            = byte(0x09)
+	opCodePong            = byte(0x0A)
+	mask                  = byte(0x80)
+	payloadLength7        = byte(0x7F)
+)
 var (
 	errMalformedClientHandshake = errors.New("Malformed handshake request from client")
 	errSecWSKeyMalformed        = errors.New("Malformed Sec-WebSocket-Key")
