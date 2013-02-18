@@ -12,3 +12,8 @@ ws.onclose = function() {
 ws.onerror = function(e) {
   console.log('error: ', e)
 }
+var msg;
+ws.onmessage = function(e) {
+  console.log('msg: ', e)
+  msg = e
+}
