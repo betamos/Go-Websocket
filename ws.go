@@ -37,6 +37,15 @@ const (
 	mask                  = byte(0x80)
 	payloadLength7        = byte(0x7F)
 )
+
+type frameHeader struct {
+	fin, rsv1, rsv2, rsv3 bool
+	opCode                byte
+	mask                  bool
+	payloadLength         uint64
+	maskingKey            []byte
+}
+
 var (
 	errMalformedClientHandshake = errors.New("Malformed handshake request from client")
 	errSecWSKeyMalformed        = errors.New("Malformed Sec-WebSocket-Key")
