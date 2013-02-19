@@ -101,43 +101,12 @@ func main() {
 		go func() {
 			// Read the frameHeader
 			for i := 0; i < 2; i++ {
-				var header frameHeader
-				if c, err := rw.ReadByte(); err != nil {
-					return // TODO
+				header, err := parseFrameHeader(bufio.NewReader(rw))
+				if err != nil {
+					fmt.Println("err", err)
 				} else {
-					header.fin = c&fin != 0
-					header.rsv1 = c&rsv1 != 0
-					header.rsv2 = c&rsv2 != 0
-					header.rsv3 = c&rsv3 != 0
-					header.opCode = c & opCode
+					fmt.Println("header", header)
 				}
-
-				if c, err := rw.ReadByte(); err != nil {
-					return // TODO
-				} else {
-					header.mask = c&mask != 0
-					header.payloadLength = uint64(c & payloadLength7)
-				}
-				if header.payloadLength == 126 {
-					buf := make([]byte, 4)
-					if _, err := io.ReadFull(rw, buf); err != nil {
-						return // TODO
-					}
-					header.payloadLength = uint64(binary.BigEndian.Uint16(buf))
-				} else if header.payloadLength == 127 {
-					buf := make([]byte, 8)
-					if _, err := io.ReadFull(rw, buf); err != nil {
-						return // TODO
-					}
-					header.payloadLength = binary.BigEndian.Uint64(buf)
-				}
-				if header.mask {
-					header.maskingKey = make([]byte, 4)
-					if _, err := io.ReadFull(rw, header.maskingKey); err != nil {
-						return // TODO
-					}
-				}
-				fmt.Print(header)
 			}
 			return
 		}()
@@ -170,6 +139,48 @@ func main() {
 		rw.Flush()
 	})
 	log.Fatal(http.ListenAndServe("localhost:8080", nil))
+}
+
+// Parse the websocket frame header
+// Generates an error if malformed or the stream is interrupted
+func parseFrameHeader(r *bufio.Reader) (header *frameHeader, err error) {
+	header = &frameHeader{}
+	if c, err := r.ReadByte(); err != nil {
+		return nil, err
+	} else {
+		header.fin = c&fin != 0
+		header.rsv1 = c&rsv1 != 0
+		header.rsv2 = c&rsv2 != 0
+		header.rsv3 = c&rsv3 != 0
+		header.opCode = c & opCode
+	}
+	// TODO: Check opcode?
+	if c, err := r.ReadByte(); err != nil {
+		return nil, err
+	} else {
+		header.mask = c&mask != 0
+		header.payloadLength = uint64(c & payloadLength7)
+	}
+	if header.payloadLength == 126 {
+		buf := make([]byte, 4)
+		if _, err := io.ReadFull(r, buf); err != nil {
+			return nil, err
+		}
+		header.payloadLength = uint64(binary.BigEndian.Uint16(buf))
+	} else if header.payloadLength == 127 {
+		buf := make([]byte, 8)
+		if _, err := io.ReadFull(r, buf); err != nil {
+			return nil, err
+		}
+		header.payloadLength = binary.BigEndian.Uint64(buf)
+	}
+	if header.mask {
+		header.maskingKey = make([]byte, 4)
+		if _, err := io.ReadFull(r, header.maskingKey); err != nil {
+			return nil, err
+		}
+	}
+	return header, nil
 }
 
 func wsClientHandshake(r *http.Request) (secWSAccept string, err error) {
