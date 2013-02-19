@@ -77,7 +77,7 @@ func main() {
 	http.HandleFunc("/myconn", func(w http.ResponseWriter, r *http.Request) {
 		//fmt.Println(r)
 		var status int
-		secWSAccept, err := wsClientHandshake(w, r)
+		secWSAccept, err := wsClientHandshake(r)
 		if err != nil {
 			fmt.Println(err)
 			w.Header().Set("Sec-WebSocket-Version", strconv.Itoa(secWSVersion))
@@ -173,7 +173,7 @@ func main() {
 	log.Fatal(http.ListenAndServe("localhost:8080", nil))
 }
 
-func wsClientHandshake(w http.ResponseWriter, r *http.Request) (secWSAccept string, err error) {
+func wsClientHandshake(r *http.Request) (secWSAccept string, err error) {
 
 	// Check HTTP version
 	if !r.ProtoAtLeast(minProtoMajor, minProtoMinor) {
