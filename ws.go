@@ -30,7 +30,7 @@ const (
 	rsv2                  = byte(0x20)
 	rsv3                  = byte(0x10)
 	opCode                = byte(0x0F)
-	opCodeContiuation     = byte(0x00)
+	opCodeContinuation    = byte(0x00)
 	opCodeText            = byte(0x01)
 	opCodeBinary          = byte(0x02)
 	opCodeConnectionClose = byte(0x08)
@@ -40,12 +40,30 @@ const (
 	payloadLength7        = byte(0x7F)
 )
 
+var opCodeDescriptions = map[byte]string{
+	opCodeContinuation:    "continuation frame",
+	opCodeText:            "text frame",
+	opCodeBinary:          "binary frame",
+	opCodeConnectionClose: "connection close",
+	opCodePing:            "ping",
+	opCodePong:            "pong",
+}
+
 type frameHeader struct {
 	fin, rsv1, rsv2, rsv3 bool
 	opCode                byte
 	mask                  bool
 	payloadLength         uint64
 	maskingKey            []byte
+}
+
+func (h *frameHeader) String() (s string) {
+	operation, ok := opCodeDescriptions[h.opCode]
+	if !ok {
+		operation = fmt.Sprintf("invalid operation [%X]", h.opCode)
+	}
+	return fmt.Sprintf("Fin: %t, (Rsv: %t %t %t), Op: %s, Mask: %t, PayloadLen: %v, MaskingKey: %X",
+		h.fin, h.rsv1, h.rsv2, h.rsv3, operation, h.mask, h.payloadLength, h.maskingKey)
 }
 
 var (
