@@ -1,13 +1,12 @@
 package main
 
 import (
-	"fmt"
-	//	"net"
+	"bufio"
 	"crypto/sha1"
-	//"encoding/base64"
 	"encoding/base64"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
