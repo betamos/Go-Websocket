@@ -39,6 +39,12 @@ const (
 	payloadLength7        = byte(0x7F)
 )
 
+var (
+	errMalformedClientHandshake = errors.New("Malformed handshake request from client")
+	errMalformedSecWSKey        = errors.New("Malformed Sec-WebSocket-Key")
+	errMalformedFrameHeader     = errors.New("Malformed frame header from client")
+)
+
 var opCodeDescriptions = map[byte]string{
 	opCodeContinuation:    "continuation frame",
 	opCodeText:            "text frame",
@@ -64,11 +70,6 @@ func (h *frameHeader) String() (s string) {
 	return fmt.Sprintf("Fin: %t, (Rsv: %t %t %t), Op: %s, Mask: %t, PayloadLen: %v, MaskingKey: %X",
 		h.fin, h.rsv1, h.rsv2, h.rsv3, operation, h.mask, h.payloadLength, h.maskingKey)
 }
-
-var (
-	errMalformedClientHandshake = errors.New("Malformed handshake request from client")
-	errSecWSKeyMalformed        = errors.New("Malformed Sec-WebSocket-Key")
-)
 
 func main() {
 	fmt.Println("Web socketaaa")
@@ -102,6 +103,7 @@ func main() {
 			// Read the frameHeader
 			for i := 0; i < 2; i++ {
 				header, err := parseFrameHeader(bufio.NewReader(rw))
+				// TODO: Somehow return errMalformedFrameHeader
 				if err != nil {
 					fmt.Println("err", err)
 				} else {
@@ -217,7 +219,7 @@ func wsClientHandshake(r *http.Request) (secWSAccept string, err error) {
 // Sec-WebSocket-Key value.
 func validateSecWebSocketKey(key string) (secWSAccept string, err error) {
 	if decodedKey, _ := base64.StdEncoding.DecodeString(key); err != nil || len(decodedKey) != secWSKeyLength {
-		err = errSecWSKeyMalformed
+		err = errMalformedSecWSKey
 	} else {
 		h := sha1.New()
 		h.Write([]byte(key + guid)) // sha1(key + guid)
