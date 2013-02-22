@@ -102,10 +102,10 @@ func main() {
 		go func() {
 			// Read the frameHeader
 			for i := 0; i < 2; i++ {
-				header, err := parseFrameHeader(bufio.NewReader(rw))
+				header := parseFrameHeader(bufio.NewReader(rw))
 				// TODO: Somehow return errMalformedFrameHeader
-				if err != nil {
-					fmt.Println("err", err)
+				if header == nil {
+					fmt.Println(errMalformedFrameHeader)
 				} else {
 					fmt.Println("header", header)
 				}
@@ -145,10 +145,10 @@ func main() {
 
 // Parse the websocket frame header
 // Generates an error if malformed or the stream is interrupted
-func parseFrameHeader(r *bufio.Reader) (header *frameHeader, err error) {
+func parseFrameHeader(r *bufio.Reader) (header *frameHeader) {
 	header = &frameHeader{}
 	if c, err := r.ReadByte(); err != nil {
-		return nil, err
+		return nil
 	} else {
 		header.fin = c&fin != 0
 		header.rsv1 = c&rsv1 != 0
@@ -158,7 +158,7 @@ func parseFrameHeader(r *bufio.Reader) (header *frameHeader, err error) {
 	}
 	// TODO: Check opcode?
 	if c, err := r.ReadByte(); err != nil {
-		return nil, err
+		return nil
 	} else {
 		header.mask = c&mask != 0
 		header.payloadLength = uint64(c & payloadLength7)
@@ -166,23 +166,23 @@ func parseFrameHeader(r *bufio.Reader) (header *frameHeader, err error) {
 	if header.payloadLength == 126 {
 		buf := make([]byte, 4)
 		if _, err := io.ReadFull(r, buf); err != nil {
-			return nil, err
+			return nil
 		}
 		header.payloadLength = uint64(binary.BigEndian.Uint16(buf))
 	} else if header.payloadLength == 127 {
 		buf := make([]byte, 8)
 		if _, err := io.ReadFull(r, buf); err != nil {
-			return nil, err
+			return nil
 		}
 		header.payloadLength = binary.BigEndian.Uint64(buf)
 	}
 	if header.mask {
 		header.maskingKey = make([]byte, 4)
 		if _, err := io.ReadFull(r, header.maskingKey); err != nil {
-			return nil, err
+			return nil
 		}
 	}
-	return header, nil
+	return header
 }
 
 func wsClientHandshake(r *http.Request) (secWSAccept string, err error) {
