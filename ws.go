@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/sha1"
 	"encoding/base64"
 	"encoding/binary"
@@ -9,9 +10,12 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 const (
@@ -62,16 +66,140 @@ type frameHeader struct {
 	maskingKey            []byte
 }
 
-func (h *frameHeader) String() (s string) {
-	operation, ok := opCodeDescriptions[h.opCode]
+// Converts frame header to binary data ready to be sent.
+// Warning, this method is optimized for server sending, it DOES ignore certain
+// aspects of the header such as rsv bits and presumes there is no masking,
+// according to the specification. Does not validate op code.
+func (fh *frameHeader) Bytes() []byte {
+	// Use buffer to prevent errors
+	buffer := bytes.NewBuffer(make([]byte, 0, 10))
+	if fh.fin {
+		buffer.WriteByte(fin | fh.opCode)
+	} else {
+		buffer.WriteByte(fh.opCode)
+	}
+	var (
+		baseLen byte // First length byte
+		lenLen  int  // Length of the extended payload length (bytes)
+	)
+	extLen := make([]byte, 8)
+	if fh.payloadLength > math.MaxUint16 {
+		baseLen = 127
+		lenLen = 8
+		binary.BigEndian.PutUint64(extLen, fh.payloadLength)
+	} else if fh.payloadLength > 125 {
+		baseLen = 126
+		lenLen = 2
+		binary.BigEndian.PutUint16(extLen, uint16(fh.payloadLength))
+	} else {
+		baseLen = byte(fh.payloadLength)
+		lenLen = 0
+	}
+	extLen = extLen[:lenLen]
+	buffer.WriteByte(baseLen)
+	buffer.Write(extLen)
+	return buffer.Bytes()
+}
+
+type Client struct {
+	rw    *bufio.ReadWriter
+	mutex *sync.Mutex
+	In    chan io.Reader // Bytes that should be read by recieve
+}
+
+func NewClient(rw *bufio.ReadWriter) (c *Client) {
+	c = &Client{
+		rw:    rw,
+		mutex: &sync.Mutex{},
+		In:    make(chan io.Reader),
+	}
+	fmt.Println("Before lock")
+	c.mutex.Lock()
+	fmt.Println("After lock")
+	return
+}
+
+func (c *Client) loop() {
+	var err error
+	// Don't allow reading unless in message mode
+	for {
+		fh := parseFrameHeader(c.rw)
+		fmt.Println(fh)
+		if fh == nil {
+			break
+		}
+		switch fh.opCode {
+		case opCodePing:
+			// Mutex
+			// c.rw.Write(pong)
+		case opCodeText:
+			fmt.Println("text")
+			r, w := io.Pipe()
+			c.In <- r
+
+			var b byte
+			for i := uint64(0); i < fh.payloadLength; i++ {
+				b, err = c.rw.ReadByte()
+				if err != nil {
+					log.Fatal(err) // TODO
+				}
+				w.Write([]byte{fh.maskingKey[i%4] ^ b})
+			}
+			w.Close() // Close the pipe writer
+		case opCodeConnectionClose:
+			break
+		default:
+			fmt.Printf("Unhandled operation %X\n", fh.opCode)
+		}
+	}
+	fmt.Println(err)
+	c.mutex.Unlock()
+	// Close connection
+}
+
+// Send a message to the client
+// TODO: Fragmentation, this requires a lot of memory for large messages
+func (c *Client) Send(p []byte) (n int, err error) {
+	fh := &frameHeader{
+		fin:           true,
+		opCode:        opCodeText,
+		payloadLength: uint64(len(p)),
+	}
+	_, err = c.rw.Write(fh.Bytes())
+	if err != nil {
+		return
+	}
+	_, err = c.rw.Write(p)
+	return
+}
+
+func (fh *frameHeader) String() (s string) {
+	operation, ok := opCodeDescriptions[fh.opCode]
 	if !ok {
-		operation = fmt.Sprintf("invalid operation [%X]", h.opCode)
+		operation = fmt.Sprintf("invalid operation [%X]", fh.opCode)
 	}
 	return fmt.Sprintf("Fin: %t, (Rsv: %t %t %t), Op: %s, Mask: %t, PayloadLen: %v, MaskingKey: %X",
-		h.fin, h.rsv1, h.rsv2, h.rsv3, operation, h.mask, h.payloadLength, h.maskingKey)
+		fh.fin, fh.rsv1, fh.rsv2, fh.rsv3, operation, fh.mask, fh.payloadLength, fh.maskingKey)
 }
 
 func main() {
+	// TODO: Attach to future handler
+	clients := make(chan *Client)
+	go func() {
+		for c, ok := <-clients; ok; c, ok = <-clients {
+			//go func() {
+			// Client processing
+			fmt.Println("New client", c)
+			for r, ok := <-c.In; ok; r, ok = <-c.In {
+				// Print messages
+				io.Copy(os.Stdout, r)
+			}
+			fmt.Println("No more messages")
+			//}()
+		}
+		fmt.Println("No more clients")
+	}()
+
 	fmt.Println("Web socketaaa")
 	http.Handle("/", http.FileServer(http.Dir("web")))
 	http.HandleFunc("/myconn", func(w http.ResponseWriter, r *http.Request) {
@@ -99,55 +227,20 @@ func main() {
 		fmt.Println("header written")
 		conn, rw, err := hj.Hijack()
 		fmt.Println(conn, rw)
-		go func() {
-			// Read the frameHeader
-			for i := 0; i < 2; i++ {
-				header := parseFrameHeader(bufio.NewReader(rw))
-				// TODO: Somehow return errMalformedFrameHeader
-				if header == nil {
-					fmt.Println(errMalformedFrameHeader)
-				} else {
-					fmt.Println("header", header)
-				}
-			}
-			return
-		}()
-		ping := []byte{
-			//0x81, // fin, rsv[0..2] = 0, opcode = text frame
-			//0x02,
-			//0x41,
-			//0x42,
-			//0x81,
-			0x89,
-			0x00,
-		}
 		rw.WriteString("\r\n")
-		fmt.Println("Flushed")
-		rw.Write(ping)
-		ab := []byte{
-			0x81, // fin, rsv[0..2] = 0, opcode = text frame
-			0x02,
-			0x41,
-			0x42,
-		}
-		bin := []byte{
-			0x82, // fin, rsv[0..2] = 0, opcode = text frame
-			0x02,
-			0x10,
-			0xff,
-		}
-		rw.Write(ab)
-		rw.Write(bin)
 		rw.Flush()
+		client := NewClient(rw)
+		clients <- client
+		client.loop()
 	})
 	log.Fatal(http.ListenAndServe("localhost:8080", nil))
 }
 
 // Parse the websocket frame header
 // Generates an error if malformed or the stream is interrupted
-func parseFrameHeader(r *bufio.Reader) (header *frameHeader) {
+func parseFrameHeader(rw *bufio.ReadWriter) (header *frameHeader) {
 	header = &frameHeader{}
-	if c, err := r.ReadByte(); err != nil {
+	if c, err := rw.ReadByte(); err != nil {
 		return nil
 	} else {
 		header.fin = c&fin != 0
@@ -157,7 +250,7 @@ func parseFrameHeader(r *bufio.Reader) (header *frameHeader) {
 		header.opCode = c & opCode
 	}
 	// TODO: Check opcode?
-	if c, err := r.ReadByte(); err != nil {
+	if c, err := rw.ReadByte(); err != nil {
 		return nil
 	} else {
 		header.mask = c&mask != 0
@@ -165,20 +258,20 @@ func parseFrameHeader(r *bufio.Reader) (header *frameHeader) {
 	}
 	if header.payloadLength == 126 {
 		buf := make([]byte, 4)
-		if _, err := io.ReadFull(r, buf); err != nil {
+		if _, err := io.ReadFull(rw, buf); err != nil {
 			return nil
 		}
 		header.payloadLength = uint64(binary.BigEndian.Uint16(buf))
 	} else if header.payloadLength == 127 {
 		buf := make([]byte, 8)
-		if _, err := io.ReadFull(r, buf); err != nil {
+		if _, err := io.ReadFull(rw, buf); err != nil {
 			return nil
 		}
 		header.payloadLength = binary.BigEndian.Uint64(buf)
 	}
 	if header.mask {
 		header.maskingKey = make([]byte, 4)
-		if _, err := io.ReadFull(r, header.maskingKey); err != nil {
+		if _, err := io.ReadFull(rw, header.maskingKey); err != nil {
 			return nil
 		}
 	}
