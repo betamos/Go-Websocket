@@ -116,11 +116,12 @@ func NewClient(rw *bufio.ReadWriter) (c *Client) {
 func (c *Client) loop() {
 	var err error
 	// Don't allow reading unless in message mode
+NewMessages:
 	for {
 		fh := parseFrameHeader(c.rw)
 		fmt.Println(fh)
 		if fh == nil {
-			break
+			break NewMessages
 		}
 		switch fh.opCode {
 		case opCodePing:
@@ -141,7 +142,7 @@ func (c *Client) loop() {
 			}
 			w.Close() // Close the pipe writer
 		case opCodeConnectionClose:
-			break
+			break NewMessages
 		default:
 			fmt.Printf("Unhandled operation %X\n", fh.opCode)
 		}
