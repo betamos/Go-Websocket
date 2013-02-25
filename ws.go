@@ -65,6 +65,15 @@ type frameHeader struct {
 	maskingKey            []byte
 }
 
+func (fh *frameHeader) String() (s string) {
+	operation, ok := opCodeDescriptions[fh.opCode]
+	if !ok {
+		operation = fmt.Sprintf("invalid operation [%X]", fh.opCode)
+	}
+	return fmt.Sprintf("Fin: %t, (Rsv: %t %t %t), Op: %s, Mask: %t, PayloadLen: %v, MaskingKey: %X",
+		fh.fin, fh.rsv1, fh.rsv2, fh.rsv3, operation, fh.mask, fh.payloadLength, fh.maskingKey)
+}
+
 // Converts frame header to binary data ready to be sent.
 // Warning, this method is optimized for server sending, it DOES ignore certain
 // aspects of the header such as rsv bits and presumes there is no masking,
@@ -166,15 +175,6 @@ func (c *Client) Send(p []byte) (n int, err error) {
 	}
 	_, err = c.rw.Write(p)
 	return
-}
-
-func (fh *frameHeader) String() (s string) {
-	operation, ok := opCodeDescriptions[fh.opCode]
-	if !ok {
-		operation = fmt.Sprintf("invalid operation [%X]", fh.opCode)
-	}
-	return fmt.Sprintf("Fin: %t, (Rsv: %t %t %t), Op: %s, Mask: %t, PayloadLen: %v, MaskingKey: %X",
-		fh.fin, fh.rsv1, fh.rsv2, fh.rsv3, operation, fh.mask, fh.payloadLength, fh.maskingKey)
 }
 
 func main() {
