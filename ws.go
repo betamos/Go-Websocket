@@ -123,42 +123,37 @@ func NewClient(rw *bufio.ReadWriter) (c *Client) {
 }
 
 func (c *Client) loop() {
-	var err error
-	// Don't allow reading unless in message mode
-NewMessages:
+	defer close(c.In)
 	for {
 		fh := parseFrameHeader(c.rw)
 		fmt.Println(fh)
 		if fh == nil {
-			break NewMessages
+			return
 		}
 		switch fh.opCode {
 		case opCodePing:
 			// Mutex
 			// c.rw.Write(pong)
+		case opCodeBinary:
+			fallthrough // Currently binary and text are recieved in the same way
 		case opCodeText:
-			fmt.Println("text")
 			r, w := io.Pipe()
 			c.In <- r
-
-			var b byte
 			for i := uint64(0); i < fh.payloadLength; i++ {
-				b, err = c.rw.ReadByte()
+				b, err := c.rw.ReadByte()
 				if err != nil {
-					log.Fatal(err) // TODO
+					w.CloseWithError(io.ErrUnexpectedEOF)
+					return
 				}
 				w.Write([]byte{fh.maskingKey[i%4] ^ b})
 			}
-			w.Close() // Close the pipe writer
+			w.Close() // Close the pipe writer with an EOF
 		case opCodeConnectionClose:
-			break NewMessages
+			return
 		default:
 			fmt.Printf("Unhandled operation %X\n", fh.opCode)
 		}
 	}
-	fmt.Println(err)
-	close(c.In)
-	// Close connection
 }
 
 // Send a message to the client
