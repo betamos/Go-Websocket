@@ -15,7 +15,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 )
 
 const (
@@ -102,20 +101,15 @@ func (fh *frameHeader) Bytes() []byte {
 }
 
 type Client struct {
-	rw    *bufio.ReadWriter
-	mutex *sync.Mutex
-	In    chan io.Reader // Bytes that should be read by recieve
+	rw *bufio.ReadWriter
+	In chan io.Reader // Bytes that should be read by recieve
 }
 
 func NewClient(rw *bufio.ReadWriter) (c *Client) {
 	c = &Client{
-		rw:    rw,
-		mutex: &sync.Mutex{},
-		In:    make(chan io.Reader),
+		rw: rw,
+		In: make(chan io.Reader),
 	}
-	fmt.Println("Before lock")
-	c.mutex.Lock()
-	fmt.Println("After lock")
 	return
 }
 
@@ -153,7 +147,7 @@ func (c *Client) loop() {
 		}
 	}
 	fmt.Println(err)
-	c.mutex.Unlock()
+	close(c.In)
 	// Close connection
 }
 
