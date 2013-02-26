@@ -11,6 +11,7 @@ import (
 	"io"
 	"log"
 	"math"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -109,21 +110,67 @@ func (fh *frameHeader) Bytes() []byte {
 	return buffer.Bytes()
 }
 
-type Client struct {
-	rw *bufio.ReadWriter
-	In chan io.Reader // Bytes that should be read by recieve
+// A websocket handler, implements http.Handler
+type Handler struct {
+	Clients chan *Client
 }
 
-func NewClient(rw *bufio.ReadWriter) (c *Client) {
+func NewHandler() (h *Handler) {
+	h = &Handler{
+		Clients: make(chan *Client),
+	}
+	return
+}
+
+func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	var status int
+	secWSAccept, err := wsClientHandshake(r)
+	if err != nil {
+		fmt.Println(err)
+		w.Header().Set("Sec-WebSocket-Version", strconv.Itoa(secWSVersion))
+		status = http.StatusBadRequest
+	} else {
+		// TODO: Map or list instead?
+		w.Header().Set("Upgrade", "websocket")
+		w.Header().Set("Connection", "Upgrade")
+		w.Header().Set("Sec-WebSocket-Accept", secWSAccept)
+		status = http.StatusSwitchingProtocols
+	}
+	w.WriteHeader(status)
+	hj, ok := w.(http.Hijacker)
+	if !ok {
+		log.Fatal("No HTTP hijacking")
+	}
+	conn, rw, err := hj.Hijack()
+	if err != nil {
+		log.Fatal(err)
+	}
+	rw.WriteString("\r\n")
+	rw.Flush()
+	client := NewClient(conn, rw)
+	h.Clients <- client
+	client.loop()
+}
+
+type Client struct {
+	conn net.Conn
+	rw   *bufio.ReadWriter
+	In   chan io.Reader
+}
+
+func NewClient(conn net.Conn, rw *bufio.ReadWriter) (c *Client) {
 	c = &Client{
-		rw: rw,
-		In: make(chan io.Reader),
+		conn: conn,
+		rw:   rw,
+		In:   make(chan io.Reader),
 	}
 	return
 }
 
 func (c *Client) loop() {
+	// When client disconnected, close the 
 	defer close(c.In)
+	defer c.conn.Close()
 	for {
 		fh := parseFrameHeader(c.rw)
 		fmt.Println(fh)
@@ -174,9 +221,9 @@ func (c *Client) Send(p []byte) (n int, err error) {
 
 func main() {
 	// TODO: Attach to future handler
-	clients := make(chan *Client)
+	h := NewHandler()
 	go func() {
-		for c, ok := <-clients; ok; c, ok = <-clients {
+		for c, ok := <-h.Clients; ok; c, ok = <-h.Clients {
 			//go func() {
 			// Client processing
 			fmt.Println("New client", c)
@@ -192,37 +239,7 @@ func main() {
 
 	fmt.Println("Web socketaaa")
 	http.Handle("/", http.FileServer(http.Dir("web")))
-	http.HandleFunc("/myconn", func(w http.ResponseWriter, r *http.Request) {
-		//fmt.Println(r)
-		var status int
-		secWSAccept, err := wsClientHandshake(r)
-		if err != nil {
-			fmt.Println(err)
-			w.Header().Set("Sec-WebSocket-Version", strconv.Itoa(secWSVersion))
-			status = http.StatusBadRequest
-		} else {
-			// TODO: Map or list instead?
-			w.Header().Set("Upgrade", "websocket")
-			w.Header().Set("Connection", "Upgrade")
-			w.Header().Set("Sec-WebSocket-Accept", secWSAccept)
-			status = http.StatusSwitchingProtocols
-		}
-		fmt.Printf("Close: %v\n", r.Close)
-		w.WriteHeader(status)
-		w.Write([]byte{0x4e})
-		hj, ok := w.(http.Hijacker)
-		if !ok {
-			fmt.Println("No hijack")
-		}
-		fmt.Println("header written")
-		conn, rw, err := hj.Hijack()
-		fmt.Println(conn, rw)
-		rw.WriteString("\r\n")
-		rw.Flush()
-		client := NewClient(rw)
-		clients <- client
-		client.loop()
-	})
+	http.Handle("/myconn", h)
 	log.Fatal(http.ListenAndServe("localhost:8080", nil))
 }
 
