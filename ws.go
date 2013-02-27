@@ -311,18 +311,16 @@ func (c *Conn) parseFrameHeader() (header *frameHeader) {
 		header.mask = b&mask != 0
 		header.payloadLength = uint64(b & payloadLength7)
 	}
+	var err error
 	if header.payloadLength == 126 {
-		buf := make([]byte, 4)
-		if _, err := io.ReadFull(c.rw, buf); err != nil {
-			return nil
-		}
-		header.payloadLength = uint64(binary.BigEndian.Uint16(buf))
+		var len16 uint16
+		err = binary.Read(c.rw, binary.BigEndian, &len16)
+		header.payloadLength = uint64(len16)
 	} else if header.payloadLength == 127 {
-		buf := make([]byte, 8)
-		if _, err := io.ReadFull(c.rw, buf); err != nil {
-			return nil
-		}
-		header.payloadLength = binary.BigEndian.Uint64(buf)
+		err = binary.Read(c.rw, binary.BigEndian, &header.payloadLength)
+	}
+	if err != nil {
+		return nil
 	}
 	if header.mask {
 		header.maskingKey = make([]byte, 4)
