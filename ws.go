@@ -184,7 +184,7 @@ func (c *Conn) loop() {
 	reason := ""
 NewMessages:
 	for {
-		fh := c.parseFrameHeader()
+		fh := parseFrameHeader(c.rw)
 		fmt.Println(fh)
 		if fh == nil {
 			code = statusProtocolError
@@ -236,7 +236,7 @@ func (c *Conn) close(code uint16, reason string) {
 	c.rw.Flush()
 	// Client has not yet sent the closing frame
 	for !c.clientClose {
-		if fh := c.parseFrameHeader(); fh != nil {
+		if fh := parseFrameHeader(c.rw); fh != nil {
 			if fh.opCode == opCodeConnectionClose {
 				c.clientClose = true
 			}
@@ -291,13 +291,13 @@ func main() {
 	log.Fatal(http.ListenAndServe("localhost:8080", nil))
 }
 
-// Parse the websocket frame header
-// Generates an error if malformed or the stream is interrupted
-func (c *Conn) parseFrameHeader() (fh *frameHeader) {
+// Reads and parses the websocket frame header.
+// Return value of nil means interrupted io, or malformed frame header.
+func parseFrameHeader(r io.Reader) (fh *frameHeader) {
 	var err error
 	// The first two bytes, containing most of the header data
 	op := make([]byte, 2)
-	if _, err = io.ReadFull(c.rw, op); err != nil {
+	if _, err = io.ReadFull(r, op); err != nil {
 		return nil
 	}
 	fh = &frameHeader{
@@ -314,10 +314,10 @@ func (c *Conn) parseFrameHeader() (fh *frameHeader) {
 	// Read the extended payload length and update fh accordingly
 	if fh.payloadLength == 126 {
 		var len16 uint16
-		err = binary.Read(c.rw, binary.BigEndian, &len16)
+		err = binary.Read(r, binary.BigEndian, &len16)
 		fh.payloadLength = uint64(len16)
 	} else if fh.payloadLength == 127 {
-		err = binary.Read(c.rw, binary.BigEndian, &fh.payloadLength)
+		err = binary.Read(r, binary.BigEndian, &fh.payloadLength)
 	}
 	if err != nil {
 		// An io error occured while reading
@@ -327,7 +327,7 @@ func (c *Conn) parseFrameHeader() (fh *frameHeader) {
 	// If payload is masked, read masking key
 	if fh.mask {
 		fh.maskingKey = make([]byte, 4)
-		if _, err := io.ReadFull(c.rw, fh.maskingKey); err != nil {
+		if _, err := io.ReadFull(r, fh.maskingKey); err != nil {
 			return nil
 		}
 	}
