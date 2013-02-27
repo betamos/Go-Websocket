@@ -182,15 +182,20 @@ func NewConn(conn net.Conn, rw *bufio.ReadWriter) (c *Conn) {
 func (c *Conn) loop() {
 	code := statusNormalClosure
 	reason := ""
+	var (
+		fh  *frameHeader
+		err error
+	)
 NewMessages:
 	for {
-		fh := parseFrameHeader(c.rw)
-		fmt.Println(fh)
-		if fh == nil {
+		if fh, err = parseFrameHeader(c.rw); err != nil {
+			// TODO: Proper logging?
+			log.Println("Could not parse frame header", c.conn.RemoteAddr(), err, "Closing websocket")
 			code = statusProtocolError
-			reason = errMalformedFrameHeader.Error()
+			reason = err.Error()
 			break NewMessages
 		}
+		fmt.Println(fh)
 		switch fh.opCode {
 		case opCodePing:
 			// Mutex
@@ -236,7 +241,7 @@ func (c *Conn) close(code uint16, reason string) {
 	c.rw.Flush()
 	// Client has not yet sent the closing frame
 	for !c.clientClose {
-		if fh := parseFrameHeader(c.rw); fh != nil {
+		if fh, err := parseFrameHeader(c.rw); err == nil {
 			if fh.opCode == opCodeConnectionClose {
 				c.clientClose = true
 			}
@@ -292,13 +297,14 @@ func main() {
 }
 
 // Reads and parses the websocket frame header.
-// Return value of nil means interrupted io, or malformed frame header.
-func parseFrameHeader(r io.Reader) (fh *frameHeader) {
-	var err error
+// The error is EOF only if no bytes were read. If an EOF happens after reading
+// some but not all the bytes, parseFrameHeader returns ErrUnexpectedEOF. 
+// If the frame header is malformed, the error is errMalformedFrameheader.
+func parseFrameHeader(r io.Reader) (fh *frameHeader, err error) {
 	// The first two bytes, containing most of the header data
 	op := make([]byte, 2)
 	if _, err = io.ReadFull(r, op); err != nil {
-		return nil
+		return
 	}
 	fh = &frameHeader{
 		fin:           op[0]&fin != 0,
@@ -309,7 +315,7 @@ func parseFrameHeader(r io.Reader) (fh *frameHeader) {
 		mask:          op[1]&mask != 0,
 		payloadLength: uint64(op[1] & payloadLength7),
 	}
-	if _, ok := opCodeDescriptions[opCode]; !ok {
+	if _, ok := opCodeDescriptions[fh.opCode]; !ok {
 		// The opCode is undefined
 		err = errMalformedFrameHeader
 		return
@@ -325,14 +331,15 @@ func parseFrameHeader(r io.Reader) (fh *frameHeader) {
 	}
 	if err != nil {
 		// An io error occured while reading
-		return nil
+		err = io.ErrUnexpectedEOF
+		return
 	}
 
 	// If payload is masked, read masking key
 	if fh.mask {
 		fh.maskingKey = make([]byte, 4)
-		if _, err := io.ReadFull(r, fh.maskingKey); err != nil {
-			return nil
+		if _, err = io.ReadFull(r, fh.maskingKey); err != nil {
+			err = io.ErrUnexpectedEOF
 		}
 	}
 	return
