@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"log"
 	"math"
 	"net"
@@ -160,10 +161,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 type Conn struct {
-	conn net.Conn
-	rw   *bufio.ReadWriter
-	in   chan<- io.Reader
-	In   <-chan io.Reader
+	conn        net.Conn
+	clientClose bool // Has the client sent a close frame
+	rw          *bufio.ReadWriter
+	in          chan<- io.Reader
+	In          <-chan io.Reader
 }
 
 func NewConn(conn net.Conn, rw *bufio.ReadWriter) (c *Conn) {
@@ -208,6 +210,7 @@ NewMessages:
 			}
 			w.Close() // Close the pipe writer with an EOF
 		case opCodeConnectionClose:
+			c.clientClose = true
 			break NewMessages
 		default:
 			fmt.Printf("Unhandled operation %X\n", fh.opCode)
@@ -229,6 +232,20 @@ func (c *Conn) close(code uint16, reason string) {
 	binary.Write(c.rw, binary.BigEndian, code)
 	c.rw.WriteString(reason)
 	c.rw.Flush()
+	// Client has not yet sent the closing frame
+	for !c.clientClose {
+		if fh := parseFrameHeader(c.rw); fh != nil {
+			if fh.opCode == opCodeConnectionClose {
+				c.clientClose = true
+			}
+			// When in closing state, discard the payload
+			// TODO: Read the code and reason for close?
+			io.CopyN(ioutil.Discard, c.rw, int64(fh.payloadLength))
+		} else {
+			log.Println("The client %v did NOT properly complete the WebSocket closing handshake", c.conn.RemoteAddr())
+			break
+		}
+	}
 	c.conn.Close()
 }
 
