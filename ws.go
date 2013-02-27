@@ -279,13 +279,13 @@ func main() {
 				// Print messages
 				io.Copy(os.Stdout, r)
 			}
-			fmt.Println("No more messages")
+			fmt.Println("Client disconnected")
 			//}()
 		}
 		fmt.Println("No more clients")
 	}()
 
-	fmt.Println("Web socketaaa")
+	fmt.Println("Web Sockets in Go")
 	http.Handle("/", http.FileServer(http.Dir("web")))
 	http.Handle("/myconn", h)
 	log.Fatal(http.ListenAndServe("localhost:8080", nil))
@@ -352,8 +352,6 @@ func wsClientHandshake(r *http.Request) (secWSAccept string, err error) {
 	if clientSecWSVersion, errFormat :=
 		// TODO: Header.Get() just returns the first value, could be multiple
 		strconv.Atoi(r.Header.Get("Sec-WebSocket-Version")); !(errFormat == nil && clientSecWSVersion == secWSVersion) {
-		fmt.Println("hej")
-		fmt.Println(clientSecWSVersion)
 		err = errMalformedClientHandshake
 		return
 	}
