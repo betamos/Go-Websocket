@@ -43,6 +43,13 @@ const (
 	payloadLength7        = byte(0x7F)
 )
 
+const (
+	statusNormalClosure   = uint16(1000)
+	statusGoingAway       = uint16(1001)
+	statusProtocolError   = uint16(1002)
+	statusUnsupportedData = uint16(1003)
+)
+
 var (
 	errMalformedClientHandshake = errors.New("Malformed handshake request from client")
 	errMalformedSecWSKey        = errors.New("Malformed Sec-WebSocket-Key")
@@ -168,14 +175,16 @@ func NewClient(conn net.Conn, rw *bufio.ReadWriter) (c *Client) {
 }
 
 func (c *Client) loop() {
-	// When client disconnected, close the 
-	defer close(c.In)
-	defer c.conn.Close()
+	code := statusNormalClosure
+	reason := ""
+NewMessages:
 	for {
 		fh := parseFrameHeader(c.rw)
 		fmt.Println(fh)
 		if fh == nil {
-			return
+			code = statusProtocolError
+			reason = errMalformedFrameHeader.Error()
+			break NewMessages
 		}
 		switch fh.opCode {
 		case opCodePing:
@@ -196,11 +205,28 @@ func (c *Client) loop() {
 			}
 			w.Close() // Close the pipe writer with an EOF
 		case opCodeConnectionClose:
-			return
+			break NewMessages
 		default:
 			fmt.Printf("Unhandled operation %X\n", fh.opCode)
 		}
 	}
+	c.close(code, reason)
+}
+
+// Initiate closing handshake and close underlying TCP connection.
+// Discard all new incoming messages and terminate current outgoing messages.
+func (c *Client) close(code uint16, reason string) {
+	close(c.In) // Close the channel for new messages
+	closeFrame := &frameHeader{
+		fin:           true,
+		opCode:        opCodeConnectionClose,
+		payloadLength: uint64(2 + len(reason)),
+	}
+	c.rw.Write(closeFrame.Bytes())
+	binary.Write(c.rw, binary.BigEndian, code)
+	c.rw.WriteString(reason)
+	c.rw.Flush()
+	c.conn.Close()
 }
 
 // Send a message to the client
