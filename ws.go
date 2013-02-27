@@ -293,42 +293,45 @@ func main() {
 
 // Parse the websocket frame header
 // Generates an error if malformed or the stream is interrupted
-func (c *Conn) parseFrameHeader() (header *frameHeader) {
-	header = &frameHeader{}
-	if b, err := c.rw.ReadByte(); err != nil {
+func (c *Conn) parseFrameHeader() (fh *frameHeader) {
+	var err error
+	// The first two bytes, containing most of the header data
+	op := make([]byte, 2)
+	if _, err = io.ReadFull(c.rw, op); err != nil {
 		return nil
-	} else {
-		header.fin = b&fin != 0
-		header.rsv1 = b&rsv1 != 0
-		header.rsv2 = b&rsv2 != 0
-		header.rsv3 = b&rsv3 != 0
-		header.opCode = b & opCode
+	}
+	fh = &frameHeader{
+		fin:           op[0]&fin != 0,
+		rsv1:          op[0]&rsv1 != 0,
+		rsv2:          op[0]&rsv2 != 0,
+		rsv3:          op[0]&rsv3 != 0,
+		opCode:        op[0] & opCode,
+		mask:          op[1]&mask != 0,
+		payloadLength: uint64(op[1] & payloadLength7),
 	}
 	// TODO: Check opcode?
-	if b, err := c.rw.ReadByte(); err != nil {
-		return nil
-	} else {
-		header.mask = b&mask != 0
-		header.payloadLength = uint64(b & payloadLength7)
-	}
-	var err error
-	if header.payloadLength == 126 {
+
+	// Read the extended payload length and update fh accordingly
+	if fh.payloadLength == 126 {
 		var len16 uint16
 		err = binary.Read(c.rw, binary.BigEndian, &len16)
-		header.payloadLength = uint64(len16)
-	} else if header.payloadLength == 127 {
-		err = binary.Read(c.rw, binary.BigEndian, &header.payloadLength)
+		fh.payloadLength = uint64(len16)
+	} else if fh.payloadLength == 127 {
+		err = binary.Read(c.rw, binary.BigEndian, &fh.payloadLength)
 	}
 	if err != nil {
+		// An io error occured while reading
 		return nil
 	}
-	if header.mask {
-		header.maskingKey = make([]byte, 4)
-		if _, err := io.ReadFull(c.rw, header.maskingKey); err != nil {
+
+	// If payload is masked, read masking key
+	if fh.mask {
+		fh.maskingKey = make([]byte, 4)
+		if _, err := io.ReadFull(c.rw, fh.maskingKey); err != nil {
 			return nil
 		}
 	}
-	return header
+	return
 }
 
 func wsClientHandshake(r *http.Request) (secWSAccept string, err error) {
