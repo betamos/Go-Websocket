@@ -309,7 +309,11 @@ func parseFrameHeader(r io.Reader) (fh *frameHeader) {
 		mask:          op[1]&mask != 0,
 		payloadLength: uint64(op[1] & payloadLength7),
 	}
-	// TODO: Check opcode?
+	if _, ok := opCodeDescriptions[opCode]; !ok {
+		// The opCode is undefined
+		err = errMalformedFrameHeader
+		return
+	}
 
 	// Read the extended payload length and update fh accordingly
 	if fh.payloadLength == 126 {
