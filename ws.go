@@ -119,12 +119,12 @@ func (fh *frameHeader) Bytes() []byte {
 
 // A websocket handler, implements http.Handler
 type Handler struct {
-	Clients chan *Client
+	Conns chan *Conn
 }
 
 func NewHandler() (h *Handler) {
 	h = &Handler{
-		Clients: make(chan *Client),
+		Conns: make(chan *Conn),
 	}
 	return
 }
@@ -154,21 +154,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	rw.WriteString("\r\n")
 	rw.Flush()
-	client := NewClient(conn, rw)
-	h.Clients <- client
+	client := NewConn(conn, rw)
+	h.Conns <- client
 	client.loop()
 }
 
-type Client struct {
+type Conn struct {
 	conn net.Conn
 	rw   *bufio.ReadWriter
 	in   chan<- io.Reader
 	In   <-chan io.Reader
 }
 
-func NewClient(conn net.Conn, rw *bufio.ReadWriter) (c *Client) {
+func NewConn(conn net.Conn, rw *bufio.ReadWriter) (c *Conn) {
 	in := make(chan io.Reader)
-	c = &Client{
+	c = &Conn{
 		conn: conn,
 		rw:   rw,
 		in:   in,
@@ -177,7 +177,7 @@ func NewClient(conn net.Conn, rw *bufio.ReadWriter) (c *Client) {
 	return
 }
 
-func (c *Client) loop() {
+func (c *Conn) loop() {
 	code := statusNormalClosure
 	reason := ""
 NewMessages:
@@ -218,7 +218,7 @@ NewMessages:
 
 // Initiate closing handshake and close underlying TCP connection.
 // Discard all new incoming messages and terminate current outgoing messages.
-func (c *Client) close(code uint16, reason string) {
+func (c *Conn) close(code uint16, reason string) {
 	close(c.in) // Close the channel for new messages
 	closeFrame := &frameHeader{
 		fin:           true,
@@ -234,7 +234,7 @@ func (c *Client) close(code uint16, reason string) {
 
 // Send a message to the client
 // TODO: Fragmentation, this requires a lot of memory for large messages
-func (c *Client) Send(p []byte) (n int, err error) {
+func (c *Conn) Send(p []byte) (n int, err error) {
 	fh := &frameHeader{
 		fin:           true,
 		opCode:        opCodeText,
@@ -252,7 +252,7 @@ func main() {
 	// TODO: Attach to future handler
 	h := NewHandler()
 	go func() {
-		for c, ok := <-h.Clients; ok; c, ok = <-h.Clients {
+		for c, ok := <-h.Conns; ok; c, ok = <-h.Conns {
 			//go func() {
 			// Client processing
 			fmt.Println("New client", c)
