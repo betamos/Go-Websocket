@@ -199,6 +199,7 @@ NewMessages:
 			fallthrough // Currently binary and text are recieved in the same way
 		case opCodeText:
 			r, w := io.Pipe()
+			bw := bufio.NewWriter(w)
 			c.in <- r
 			for i := uint64(0); i < fh.payloadLength; i++ {
 				b, err := c.rw.ReadByte()
@@ -206,8 +207,9 @@ NewMessages:
 					w.CloseWithError(io.ErrUnexpectedEOF)
 					return
 				}
-				w.Write([]byte{fh.maskingKey[i%4] ^ b})
+				bw.WriteByte(fh.maskingKey[i%4] ^ b)
 			}
+			bw.Flush()
 			w.Close() // Close the pipe writer with an EOF
 		case opCodeConnectionClose:
 			c.clientClose = true
