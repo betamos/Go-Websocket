@@ -162,14 +162,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 type Client struct {
 	conn net.Conn
 	rw   *bufio.ReadWriter
-	In   chan io.Reader
+	in   chan<- io.Reader
+	In   <-chan io.Reader
 }
 
 func NewClient(conn net.Conn, rw *bufio.ReadWriter) (c *Client) {
+	in := make(chan io.Reader)
 	c = &Client{
 		conn: conn,
 		rw:   rw,
-		In:   make(chan io.Reader),
+		in:   in,
+		In:   in,
 	}
 	return
 }
@@ -194,7 +197,7 @@ NewMessages:
 			fallthrough // Currently binary and text are recieved in the same way
 		case opCodeText:
 			r, w := io.Pipe()
-			c.In <- r
+			c.in <- r
 			for i := uint64(0); i < fh.payloadLength; i++ {
 				b, err := c.rw.ReadByte()
 				if err != nil {
@@ -216,7 +219,7 @@ NewMessages:
 // Initiate closing handshake and close underlying TCP connection.
 // Discard all new incoming messages and terminate current outgoing messages.
 func (c *Client) close(code uint16, reason string) {
-	close(c.In) // Close the channel for new messages
+	close(c.in) // Close the channel for new messages
 	closeFrame := &frameHeader{
 		fin:           true,
 		opCode:        opCodeConnectionClose,
