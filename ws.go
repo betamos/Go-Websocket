@@ -184,7 +184,7 @@ func (c *Conn) loop() {
 	reason := ""
 NewMessages:
 	for {
-		fh := parseFrameHeader(c.rw)
+		fh := c.parseFrameHeader()
 		fmt.Println(fh)
 		if fh == nil {
 			code = statusProtocolError
@@ -236,7 +236,7 @@ func (c *Conn) close(code uint16, reason string) {
 	c.rw.Flush()
 	// Client has not yet sent the closing frame
 	for !c.clientClose {
-		if fh := parseFrameHeader(c.rw); fh != nil {
+		if fh := c.parseFrameHeader(); fh != nil {
 			if fh.opCode == opCodeConnectionClose {
 				c.clientClose = true
 			}
@@ -293,40 +293,40 @@ func main() {
 
 // Parse the websocket frame header
 // Generates an error if malformed or the stream is interrupted
-func parseFrameHeader(rw *bufio.ReadWriter) (header *frameHeader) {
+func (c *Conn) parseFrameHeader() (header *frameHeader) {
 	header = &frameHeader{}
-	if c, err := rw.ReadByte(); err != nil {
+	if b, err := c.rw.ReadByte(); err != nil {
 		return nil
 	} else {
-		header.fin = c&fin != 0
-		header.rsv1 = c&rsv1 != 0
-		header.rsv2 = c&rsv2 != 0
-		header.rsv3 = c&rsv3 != 0
-		header.opCode = c & opCode
+		header.fin = b&fin != 0
+		header.rsv1 = b&rsv1 != 0
+		header.rsv2 = b&rsv2 != 0
+		header.rsv3 = b&rsv3 != 0
+		header.opCode = b & opCode
 	}
 	// TODO: Check opcode?
-	if c, err := rw.ReadByte(); err != nil {
+	if b, err := c.rw.ReadByte(); err != nil {
 		return nil
 	} else {
-		header.mask = c&mask != 0
-		header.payloadLength = uint64(c & payloadLength7)
+		header.mask = b&mask != 0
+		header.payloadLength = uint64(b & payloadLength7)
 	}
 	if header.payloadLength == 126 {
 		buf := make([]byte, 4)
-		if _, err := io.ReadFull(rw, buf); err != nil {
+		if _, err := io.ReadFull(c.rw, buf); err != nil {
 			return nil
 		}
 		header.payloadLength = uint64(binary.BigEndian.Uint16(buf))
 	} else if header.payloadLength == 127 {
 		buf := make([]byte, 8)
-		if _, err := io.ReadFull(rw, buf); err != nil {
+		if _, err := io.ReadFull(c.rw, buf); err != nil {
 			return nil
 		}
 		header.payloadLength = binary.BigEndian.Uint64(buf)
 	}
 	if header.mask {
 		header.maskingKey = make([]byte, 4)
-		if _, err := io.ReadFull(rw, header.maskingKey); err != nil {
+		if _, err := io.ReadFull(c.rw, header.maskingKey); err != nil {
 			return nil
 		}
 	}
