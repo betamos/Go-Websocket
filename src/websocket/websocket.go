@@ -1,4 +1,4 @@
-package main
+package websocket
 
 import (
 	"bufio"
@@ -14,7 +14,6 @@ import (
 	"math"
 	"net"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 )
@@ -270,30 +269,6 @@ func (c *Conn) Send(p []byte) (n int, err error) {
 	}
 	_, err = c.rw.Write(p)
 	return
-}
-
-func main() {
-	// TODO: Attach to future handler
-	h := NewHandler()
-	go func() {
-		for c, ok := <-h.Conns; ok; c, ok = <-h.Conns {
-			//go func() {
-			// Client processing
-			fmt.Println("New client", c)
-			for r, ok := <-c.In; ok; r, ok = <-c.In {
-				// Print messages
-				io.Copy(os.Stdout, r)
-			}
-			fmt.Println("Client disconnected")
-			//}()
-		}
-		fmt.Println("No more clients")
-	}()
-
-	fmt.Println("Web Sockets in Go")
-	http.Handle("/", http.FileServer(http.Dir("web")))
-	http.Handle("/myconn", h)
-	log.Fatal(http.ListenAndServe("localhost:8080", nil))
 }
 
 // Reads and parses the websocket frame header.
