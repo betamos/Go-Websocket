@@ -3,11 +3,19 @@ console.log("hej hej");
 
 var ws = new WebSocket("ws://localhost:8080/myconn")
 
+setTimeout(function() {
+  ws.send("Hej och hå\n")
+}, 500)
+
+setTimeout(function() {
+  ws.close()
+}, 1000)
+
 ws.onopen = function() {
   console.log('open')
 }
-ws.onclose = function() {
-  console.log('close')
+ws.onclose = function(e) {
+  console.log('close', e)
 }
 ws.onerror = function(e) {
   console.log('error: ', e)
