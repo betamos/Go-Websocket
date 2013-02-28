@@ -10,11 +10,9 @@ import (
 )
 
 func main() {
-	// TODO: Attach to future handler
 	h := websocket.NewHandler()
 	go func() {
 		for c, ok := <-h.Conns; ok; c, ok = <-h.Conns {
-			//go func() {
 			// Client processing
 			fmt.Println("New client", c)
 			for r, ok := <-c.In; ok; r, ok = <-c.In {
@@ -22,7 +20,6 @@ func main() {
 				io.Copy(os.Stdout, r)
 			}
 			fmt.Println("Client disconnected")
-			//}()
 		}
 		fmt.Println("No more clients")
 	}()
