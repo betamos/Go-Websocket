@@ -295,6 +295,10 @@ func parseFrameHeader(r io.Reader) (fh *frameHeader, err error) {
 		err = errMalformedFrameHeader
 		return
 	}
+	if fh.rsv1 || fh.rsv2 || fh.rsv3 {
+		// No RSV bits are allowed without extension
+		err = errMalformedFrameHeader
+	}
 
 	// Read the extended payload length and update fh accordingly
 	// TODO: DRY
