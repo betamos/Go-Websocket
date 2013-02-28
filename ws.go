@@ -322,17 +322,29 @@ func parseFrameHeader(r io.Reader) (fh *frameHeader, err error) {
 	}
 
 	// Read the extended payload length and update fh accordingly
+	// TODO: DRY
 	if fh.payloadLength == 126 {
 		var len16 uint16
-		err = binary.Read(r, binary.BigEndian, &len16)
+		if binary.Read(r, binary.BigEndian, &len16) != nil {
+			err = io.ErrUnexpectedEOF
+			return
+		}
 		fh.payloadLength = uint64(len16)
+		if fh.payloadLength < 126 {
+			// Minimum number of bytes not used
+			err = errMalformedFrameHeader
+			return
+		}
 	} else if fh.payloadLength == 127 {
-		err = binary.Read(r, binary.BigEndian, &fh.payloadLength)
-	}
-	if err != nil {
-		// An io error occured while reading
-		err = io.ErrUnexpectedEOF
-		return
+		if binary.Read(r, binary.BigEndian, &fh.payloadLength) != nil {
+			err = io.ErrUnexpectedEOF
+			return
+		}
+		if fh.payloadLength <= math.MaxUint16 || fh.payloadLength > math.MaxUint64 {
+			// Minimum number of bytes not used OR the MSB of 
+			err = errMalformedFrameHeader
+			return
+		}
 	}
 
 	// If payload is masked, read masking key
