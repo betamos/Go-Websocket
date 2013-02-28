@@ -249,7 +249,7 @@ func (c *Conn) close(code uint16, reason string) {
 			// TODO: Read the code and reason for close?
 			io.CopyN(ioutil.Discard, c.rw, int64(fh.payloadLength))
 		} else {
-			log.Println("The client %v did NOT properly complete the WebSocket closing handshake", c.conn.RemoteAddr())
+			log.Println("The client ", c.conn.RemoteAddr(), " did NOT properly complete the WebSocket closing handshake")
 			break
 		}
 	}
