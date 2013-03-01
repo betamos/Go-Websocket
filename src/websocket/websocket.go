@@ -28,14 +28,16 @@ const (
 
 // Bitmasks for protocol
 const (
-	fin                   = byte(0x80)
-	rsv1                  = byte(0x40)
-	rsv2                  = byte(0x20)
-	rsv3                  = byte(0x10)
-	opCode                = byte(0x0F)
-	opCodeContinuation    = byte(0x00)
-	opCodeText            = byte(0x01)
-	opCodeBinary          = byte(0x02)
+	fin                = byte(0x80)
+	rsvMask            = byte(0x70)
+	opCodeMask         = byte(0x0F)
+	opCodeContinuation = byte(0x00)
+	opCodeText         = byte(0x01)
+	opCodeBinary       = byte(0x02)
+
+	// Control frames are identified by opcodes where the most significant bit of
+	// the opcode is 1.
+	opCodeControlFrame    = byte(0x08) // MSB of opCode
 	opCodeConnectionClose = byte(0x08)
 	opCodePing            = byte(0x09)
 	opCodePong            = byte(0x0A)
@@ -66,11 +68,102 @@ var opCodeDescriptions = map[byte]string{
 }
 
 type frameHeader struct {
-	fin, rsv1, rsv2, rsv3 bool
-	opCode                byte
-	mask                  bool
-	payloadLength         uint64
-	maskingKey            []byte
+	fin           bool
+	opCode        byte
+	mask          bool
+	payloadLength int64
+	maskingKey    []byte
+}
+
+func newFrameHeader(fin bool, opCode byte, payloadLength int64, maskingKey []byte) (fh *frameHeader, err error) {
+	if _, ok := opCodeDescriptions[opCode]; !ok {
+		// If an unknown opcode is received, the receiving endpoint MUST _Fail the
+		// WebSocket Connection_.
+		err = errMalformedFrameHeader
+		return
+	}
+	controlFrame := opCode&opCodeControlFrame != 1
+	if controlFrame && (!fin || payloadLength > 125) {
+		// All control frames MUST have a payload length of 125 bytes or less and
+		// MUST NOT be fragmented.
+		err = errMalformedFrameHeader
+		return
+	}
+	if payloadLength < 0 {
+		err = errMalformedFrameHeader
+		return
+	}
+	mask := maskingKey != nil
+	if mask && len(maskingKey) != 4 {
+		err = errMalformedFrameHeader
+		return
+	}
+	fh = &frameHeader{
+		fin:           fin,
+		opCode:        opCode,
+		mask:          mask,
+		payloadLength: payloadLength,
+		maskingKey:    maskingKey,
+	}
+	return
+}
+
+// Reads and parses the websocket frame header.
+// The error is EOF only if no bytes were read. If an EOF happens after reading
+// some but not all the bytes, parseFrameHeader returns ErrUnexpectedEOF. 
+// If the frame header is malformed, the error is errMalformedFrameheader.
+func parseFrameHeader(r io.Reader) (fh *frameHeader, err error) {
+	// The first two bytes, containing most of the header data
+	op := make([]byte, 2)
+	if _, err = io.ReadFull(r, op); err != nil {
+		return
+	}
+	if rsvMask&op[0] != 0 {
+		// No RSV bits are allowed without extension
+		err = errMalformedFrameHeader
+		return
+	}
+	var (
+		payloadLength = int64(op[1] & payloadLength7)
+		mask          = op[1]&mask != 0
+		maskingKey    []byte
+	)
+
+	// Read the extended payload length and update fh accordingly
+	// TODO: DRY
+	if payloadLength == 126 {
+		var len16 uint16
+		if binary.Read(r, binary.BigEndian, &len16) != nil {
+			err = io.ErrUnexpectedEOF
+			return
+		}
+		if payloadLength < 126 {
+			// Minimum number of bytes not used
+			err = errMalformedFrameHeader
+			return
+		}
+		payloadLength = int64(len16)
+	} else if payloadLength == 127 {
+		if binary.Read(r, binary.BigEndian, &payloadLength) != nil {
+			err = io.ErrUnexpectedEOF
+			return
+		}
+		if payloadLength <= math.MaxUint16 {
+			// Minimum number of bytes not used
+			err = errMalformedFrameHeader
+			return
+		}
+	}
+
+	// If payload is masked, read masking key
+	if mask {
+		maskingKey = make([]byte, 4)
+		if _, err = io.ReadFull(r, maskingKey); err != nil {
+			err = io.ErrUnexpectedEOF
+		}
+	}
+	fh, err = newFrameHeader(op[0]&fin != 0, op[0]&opCodeMask, payloadLength, maskingKey)
+	return
 }
 
 func (fh *frameHeader) String() (s string) {
@@ -78,8 +171,8 @@ func (fh *frameHeader) String() (s string) {
 	if !ok {
 		operation = fmt.Sprintf("invalid operation [%X]", fh.opCode)
 	}
-	return fmt.Sprintf("Fin: %t, (Rsv: %t %t %t), Op: %s, Mask: %t, PayloadLen: %v, MaskingKey: %X",
-		fh.fin, fh.rsv1, fh.rsv2, fh.rsv3, operation, fh.mask, fh.payloadLength, fh.maskingKey)
+	return fmt.Sprintf("Fin: %t, Op: %s, Mask: %t, PayloadLen: %v, MaskingKey: %X",
+		fh.fin, operation, fh.mask, fh.payloadLength, fh.maskingKey)
 }
 
 // Converts frame header to binary data ready to be sent.
@@ -102,7 +195,7 @@ func (fh *frameHeader) Bytes() []byte {
 	if fh.payloadLength > math.MaxUint16 {
 		baseLen = 127
 		lenLen = 8
-		binary.BigEndian.PutUint64(extLen, fh.payloadLength)
+		binary.BigEndian.PutUint64(extLen, uint64(fh.payloadLength))
 	} else if fh.payloadLength > 125 {
 		baseLen = 126
 		lenLen = 2
@@ -205,7 +298,7 @@ NewMessages:
 			r, w := io.Pipe()
 			bw := bufio.NewWriter(w)
 			c.in <- r
-			for i := uint64(0); i < fh.payloadLength; i++ {
+			for i := int64(0); i < fh.payloadLength; i++ {
 				b, err := c.rw.ReadByte()
 				if err != nil {
 					w.CloseWithError(io.ErrUnexpectedEOF)
@@ -229,10 +322,9 @@ NewMessages:
 // Discard all new incoming messages and terminate current outgoing messages.
 func (c *Conn) close(code uint16, reason string) {
 	close(c.in) // Close the channel for new messages
-	closeFrame := &frameHeader{
-		fin:           true,
-		opCode:        opCodeConnectionClose,
-		payloadLength: uint64(2 + len(reason)),
+	closeFrame, err := newFrameHeader(true, opCodeConnectionClose, int64(2+len(reason)), nil)
+	if err != nil {
+		log.Fatal("Close frame payload too long")
 	}
 	c.rw.Write(closeFrame.Bytes())
 	binary.Write(c.rw, binary.BigEndian, code)
@@ -261,78 +353,13 @@ func (c *Conn) Send(p []byte) (n int, err error) {
 	fh := &frameHeader{
 		fin:           true,
 		opCode:        opCodeText,
-		payloadLength: uint64(len(p)),
+		payloadLength: int64(len(p)),
 	}
 	_, err = c.rw.Write(fh.Bytes())
 	if err != nil {
 		return
 	}
 	_, err = c.rw.Write(p)
-	return
-}
-
-// Reads and parses the websocket frame header.
-// The error is EOF only if no bytes were read. If an EOF happens after reading
-// some but not all the bytes, parseFrameHeader returns ErrUnexpectedEOF. 
-// If the frame header is malformed, the error is errMalformedFrameheader.
-func parseFrameHeader(r io.Reader) (fh *frameHeader, err error) {
-	// The first two bytes, containing most of the header data
-	op := make([]byte, 2)
-	if _, err = io.ReadFull(r, op); err != nil {
-		return
-	}
-	fh = &frameHeader{
-		fin:           op[0]&fin != 0,
-		rsv1:          op[0]&rsv1 != 0,
-		rsv2:          op[0]&rsv2 != 0,
-		rsv3:          op[0]&rsv3 != 0,
-		opCode:        op[0] & opCode,
-		mask:          op[1]&mask != 0,
-		payloadLength: uint64(op[1] & payloadLength7),
-	}
-	if _, ok := opCodeDescriptions[fh.opCode]; !ok {
-		// The opCode is undefined
-		err = errMalformedFrameHeader
-		return
-	}
-	if fh.rsv1 || fh.rsv2 || fh.rsv3 {
-		// No RSV bits are allowed without extension
-		err = errMalformedFrameHeader
-	}
-
-	// Read the extended payload length and update fh accordingly
-	// TODO: DRY
-	if fh.payloadLength == 126 {
-		var len16 uint16
-		if binary.Read(r, binary.BigEndian, &len16) != nil {
-			err = io.ErrUnexpectedEOF
-			return
-		}
-		fh.payloadLength = uint64(len16)
-		if fh.payloadLength < 126 {
-			// Minimum number of bytes not used
-			err = errMalformedFrameHeader
-			return
-		}
-	} else if fh.payloadLength == 127 {
-		if binary.Read(r, binary.BigEndian, &fh.payloadLength) != nil {
-			err = io.ErrUnexpectedEOF
-			return
-		}
-		if fh.payloadLength <= math.MaxUint16 || fh.payloadLength > math.MaxUint64 {
-			// Minimum number of bytes not used OR the MSB of 
-			err = errMalformedFrameHeader
-			return
-		}
-	}
-
-	// If payload is masked, read masking key
-	if fh.mask {
-		fh.maskingKey = make([]byte, 4)
-		if _, err = io.ReadFull(r, fh.maskingKey); err != nil {
-			err = io.ErrUnexpectedEOF
-		}
-	}
 	return
 }
 
