@@ -75,6 +75,9 @@ type frameHeader struct {
 	maskingKey    []byte
 }
 
+// Create and validate new frame header.
+// If maskingKey is NOT nil, fh.mask will be true.
+// Validates and returns errMalformedFrameHeader if any rules are broken.
 func newFrameHeader(fin bool, opCode byte, payloadLength int64, maskingKey []byte) (fh *frameHeader, err error) {
 	if _, ok := opCodeDescriptions[opCode]; !ok {
 		// If an unknown opcode is received, the receiving endpoint MUST _Fail the
