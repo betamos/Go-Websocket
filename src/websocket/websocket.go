@@ -108,6 +108,11 @@ func newFrameHeader(fin bool, opCode byte, payloadLength int64, maskingKey []byt
 	return
 }
 
+// True if the frameHeader is a control frame, (ping, pong or connection close)
+func (fh *frameHeader) controlFrame() bool {
+	return fh.opCode&opCodeControlFrame != 1
+}
+
 // Reads and parses the websocket frame header.
 // The error is EOF only if no bytes were read. If an EOF happens after reading
 // some but not all the bytes, parseFrameHeader returns ErrUnexpectedEOF. 
