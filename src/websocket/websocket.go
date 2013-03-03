@@ -2,6 +2,7 @@ package websocket
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/sha1"
 	"encoding/base64"
 	"encoding/binary"
@@ -106,23 +107,98 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	client.loop()
 }
 
+type frame struct {
+	header  *frameHeader
+	payload []byte
+}
+
+func newFrame(header *frameHeader, payload []byte) (f *frame) {
+	f = &frame{
+		header:  header,
+		payload: payload,
+	}
+	return
+}
+
+func newCloseFrame(code uint16, reason string) (f *frame, err error) {
+	reasonBytes := []byte(reason)
+	payloadLength := int64(2 + len(reasonBytes))
+	fh, err := newFrameHeader(true, opCodeConnectionClose, payloadLength, nil)
+	if err != nil {
+		return
+	}
+	buf := bytes.NewBuffer(make([]byte, 0, payloadLength))
+	binary.Write(buf, binary.BigEndian, code)
+	buf.Write(reasonBytes)
+	f = &frame{
+		header:  fh,
+		payload: buf.Bytes(),
+	}
+	return
+}
+
+var (
+	pingFrameHeader, _ = newFrameHeader(true, opCodePing, 0, nil)
+	pongFrameHeader, _ = newFrameHeader(true, opCodePong, 0, nil)
+	pingFrame          = newFrame(pingFrameHeader, nil)
+	pongFrame          = newFrame(pongFrameHeader, nil)
+)
+
 type Conn struct {
 	conn        net.Conn
 	clientClose bool // Has the client sent a close frame
 	rw          *bufio.ReadWriter
 	in          chan<- io.Reader
 	In          <-chan io.Reader
+	out         <-chan io.Writer
+	Out         chan<- io.Writer
+	send        chan *frame
 }
 
 func NewConn(conn net.Conn, rw *bufio.ReadWriter) (c *Conn) {
 	in := make(chan io.Reader)
+	out := make(chan io.Writer)
+	send := make(chan *frame)
 	c = &Conn{
 		conn: conn,
 		rw:   rw,
 		in:   in,
 		In:   in,
+		out:  out,
+		Out:  out,
+		send: send,
 	}
+	buf := []byte("hejsan\n")
+	fh, _ := newFrameHeader(true, opCodeText, int64(len(buf)), nil)
+	go func() { send <- newFrame(fh, buf) }()
+	go c.sendLoop()
 	return
+}
+
+// Blocking send loop
+// Send loop processes frames, meaning that fragmented
+// messages can be sent
+func (c *Conn) sendLoop() {
+	var err error
+	for frame, ok := <-c.send; ok; frame, ok = <-c.send {
+		fmt.Println("FRAME: ", frame.header)
+		_, err = c.rw.Write(frame.header.Bytes())
+		if err != nil {
+			break
+		}
+		if int(frame.header.payloadLength) != len(frame.payload) {
+			break
+		}
+		if frame.header.payloadLength > 0 {
+			_, err = c.rw.Write(frame.payload) // TODO: Payload length?
+			if err != nil {
+				break
+			}
+			c.rw.Flush()
+		}
+	}
+	c.conn.Close()
+	fmt.Println("No more send messages")
 }
 
 func (c *Conn) loop() {
@@ -176,14 +252,12 @@ NewMessages:
 // Discard all new incoming messages and terminate current outgoing messages.
 func (c *Conn) close(code uint16, reason string) {
 	close(c.in) // Close the channel for new messages
-	closeFrame, err := newFrameHeader(true, opCodeConnectionClose, int64(2+len(reason)), nil)
+	closeFrame, err := newCloseFrame(code, reason)
 	if err != nil {
 		log.Fatal("Close frame payload too long")
 	}
-	c.rw.Write(closeFrame.Bytes())
-	binary.Write(c.rw, binary.BigEndian, code)
-	c.rw.WriteString(reason)
-	c.rw.Flush()
+	c.send <- closeFrame
+	close(c.send)
 	// Client has not yet sent the closing frame
 	for !c.clientClose {
 		if fh, err := parseFrameHeader(c.rw); err == nil {
@@ -198,7 +272,6 @@ func (c *Conn) close(code uint16, reason string) {
 			break
 		}
 	}
-	c.conn.Close()
 }
 
 // Send a message to the client
