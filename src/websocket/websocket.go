@@ -109,10 +109,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 type frame struct {
 	header  *frameHeader
-	payload []byte
+	payload io.Reader
 }
 
-func newFrame(header *frameHeader, payload []byte) (f *frame) {
+func newFrame(header *frameHeader, payload io.Reader) (f *frame) {
 	f = &frame{
 		header:  header,
 		payload: payload,
@@ -132,7 +132,7 @@ func newCloseFrame(code uint16, reason string) (f *frame, err error) {
 	buf.Write(reasonBytes)
 	f = &frame{
 		header:  fh,
-		payload: buf.Bytes(),
+		payload: buf,
 	}
 	return
 }
@@ -168,8 +168,8 @@ func NewConn(conn net.Conn, rw *bufio.ReadWriter) (c *Conn) {
 		Out:  out,
 		send: send,
 	}
-	buf := []byte("hejsan\n")
-	fh, _ := newFrameHeader(true, opCodeText, int64(len(buf)), nil)
+	buf := bytes.NewBufferString("hejsan\n")
+	fh, _ := newFrameHeader(true, opCodeText, int64(buf.Len()), nil)
 	go func() { send <- newFrame(fh, buf) }()
 	go c.sendLoop()
 	return
@@ -186,11 +186,8 @@ func (c *Conn) sendLoop() {
 		if err != nil {
 			break
 		}
-		if int(frame.header.payloadLength) != len(frame.payload) {
-			break
-		}
 		if frame.header.payloadLength > 0 {
-			_, err = c.rw.Write(frame.payload) // TODO: Payload length?
+			_, err = io.CopyN(c.rw, frame.payload, frame.header.payloadLength) // TODO: Payload length?
 			if err != nil {
 				break
 			}
