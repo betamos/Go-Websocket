@@ -31,7 +31,7 @@ func newFrameHeader(fin bool, opCode byte, payloadLength int64, maskingKey []byt
 		err = errMalformedFrameHeader
 		return
 	}
-	controlFrame := opCode&opCodeControlFrame != 1
+	controlFrame := opCode&opCodeControlFrame != 0
 	if controlFrame && (!fin || payloadLength > 125) {
 		// All control frames MUST have a payload length of 125 bytes or less and
 		// MUST NOT be fragmented.
@@ -117,7 +117,7 @@ func parseFrameHeader(r io.Reader) (fh *frameHeader, err error) {
 
 // True if the frameHeader is a control frame, (ping, pong or connection close)
 func (fh *frameHeader) controlFrame() bool {
-	return fh.opCode&opCodeControlFrame != 1
+	return fh.opCode&opCodeControlFrame != 0
 }
 
 func (fh *frameHeader) String() (s string) {
