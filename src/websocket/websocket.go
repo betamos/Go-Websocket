@@ -107,14 +107,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 type Conn struct {
-	conn        net.Conn
-	clientClose bool // Has the client sent a close frame
-	rw          *bufio.ReadWriter
-	in          chan<- io.Reader
-	In          <-chan io.Reader
-	out         <-chan io.Writer
-	Out         chan<- io.Writer
-	send        chan *frame
+	conn               net.Conn
+	clientClose        bool // Has the client sent a close frame
+	expectingContFrame bool // Expecting a continuation frame, if fin wasn't set
+	rw                 *bufio.ReadWriter
+	in                 chan<- io.Reader
+	In                 <-chan io.Reader
+	out                <-chan io.Writer
+	Out                chan<- io.Writer
+	send               chan *frame
 }
 
 func NewConn(conn net.Conn, rw *bufio.ReadWriter) (c *Conn) {
@@ -166,6 +167,7 @@ func (c *Conn) loop() {
 	var (
 		fh  *frameHeader
 		err error
+		w   *io.PipeWriter // Current writer, for fragmented messages
 	)
 NewMessages:
 	for {
@@ -177,31 +179,66 @@ NewMessages:
 			break NewMessages
 		}
 		fmt.Println(fh)
+		f := newFrame(fh, c.rw)
 		switch fh.opCode {
+
+		// First, control frames
 		case opCodePing:
-			// Mutex
-			// c.rw.Write(pong)
-		case opCodeBinary:
-			fallthrough // Currently binary and text are recieved in the same way
-		case opCodeText:
-			r, w := io.Pipe()
-			bw := bufio.NewWriter(w)
-			c.in <- r
-			for i := int64(0); i < fh.payloadLength; i++ {
-				b, err := c.rw.ReadByte()
-				if err != nil {
-					w.CloseWithError(io.ErrUnexpectedEOF)
-					return
-				}
-				bw.WriteByte(fh.maskingKey[i%4] ^ b)
-			}
-			bw.Flush()
-			w.Close() // Close the pipe writer with an EOF
+			c.send <- pongFrame // Answer with pong
+			fallthrough         // and...
+		case opCodePong:
+			// Discard payload
+			io.CopyN(ioutil.Discard, c.rw, int64(fh.payloadLength))
 		case opCodeConnectionClose:
 			c.clientClose = true
 			break NewMessages
-		default:
-			fmt.Printf("Unhandled operation %X\n", fh.opCode)
+
+		// Regular frames
+		case opCodeBinary:
+			fallthrough // Currently binary and text are recieved in the same way
+		case opCodeText:
+			if c.expectingContFrame {
+				code = statusProtocolError
+				reason = "Expecting a continuation frame…"
+				break NewMessages
+			}
+			var r *io.PipeReader
+			r, w = io.Pipe()
+			c.in <- r
+			_, err = f.readPayloadTo(w)
+			if err == io.ErrUnexpectedEOF {
+				w.CloseWithError(io.ErrUnexpectedEOF)
+				code = statusProtocolError
+				reason = "End-point interrupted in the middle of message"
+				break NewMessages
+			} else {
+				if f.header.fin {
+					w.Close() // Close the pipe writer with an EOF
+				} else {
+					c.expectingContFrame = true
+				}
+			}
+		case opCodeContinuation:
+			if !c.expectingContFrame {
+				code = statusProtocolError
+				reason = "Unexpected continuation frame"
+				break NewMessages
+			}
+			_, err = f.readPayloadTo(w)
+			if err == io.ErrUnexpectedEOF {
+				w.CloseWithError(io.ErrUnexpectedEOF)
+				code = statusProtocolError
+				reason = "End-point interrupted in the middle of message"
+				break NewMessages
+			} else {
+				if f.header.fin {
+					w.Close() // Close the pipe writer with an EOF
+					c.expectingContFrame = false
+					w = nil
+				} else {
+					c.expectingContFrame = true
+				}
+			}
 		}
 	}
 	c.close(code, reason)

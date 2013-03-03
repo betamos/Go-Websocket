@@ -1,9 +1,17 @@
 package websocket
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/binary"
 	"io"
+)
+
+var (
+	pingFrameHeader, _ = newFrameHeader(true, opCodePing, 0, nil)
+	pongFrameHeader, _ = newFrameHeader(true, opCodePong, 0, nil)
+	pingFrame          = newFrame(pingFrameHeader, nil)
+	pongFrame          = newFrame(pongFrameHeader, nil)
 )
 
 type frame struct {
@@ -36,9 +44,33 @@ func newCloseFrame(code uint16, reason string) (f *frame, err error) {
 	return
 }
 
-var (
-	pingFrameHeader, _ = newFrameHeader(true, opCodePing, 0, nil)
-	pongFrameHeader, _ = newFrameHeader(true, opCodePong, 0, nil)
-	pingFrame          = newFrame(pingFrameHeader, nil)
-	pongFrame          = newFrame(pongFrameHeader, nil)
-)
+// Read the payload data from frame.payload into w.
+// Will mask if f.header.mask is set
+// Err will be io.
+func (f *frame) readPayloadTo(w io.Writer) (n int64, err error) {
+	br := bufio.NewReader(f.payload)
+	bw := bufio.NewWriter(w)
+	var c byte
+	if f.header.mask {
+		for n = int64(0); n < f.header.payloadLength; n++ {
+			c, err = br.ReadByte()
+			if err != nil {
+				err = io.ErrUnexpectedEOF
+				return
+			}
+			err = bw.WriteByte(f.header.maskingKey[n%4] ^ c)
+			if err != nil {
+				err = io.ErrShortWrite
+				return
+			}
+		}
+	} else {
+		n, err = io.CopyN(bw, br, f.header.payloadLength)
+		if n == f.header.payloadLength && err == io.EOF {
+			// This is no error
+			err = nil
+		}
+	}
+	err = bw.Flush()
+	return
+}
