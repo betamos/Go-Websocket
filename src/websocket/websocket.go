@@ -169,15 +169,6 @@ func NewConn(conn net.Conn, rw *bufio.ReadWriter) (c *Conn) {
 		State:  OPEN,
 		server: true,
 	}
-	buf := bytes.NewBufferString("hejsan\n")
-	buf2 := bytes.NewBufferString("svejsan!")
-	fh, _ := newFrameHeader(false, opCodeText, int64(buf.Len()), nil)
-	fhC, _ := newFrameHeader(true, opCodeContinuation, int64(buf2.Len()), nil)
-	//log.Fatal(fh, fhC, err)
-	go func() {
-		send <- newFrame(fh, buf)
-		send <- newFrame(fhC, buf2)
-	}()
 	return
 }
 
