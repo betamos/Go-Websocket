@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -101,41 +102,95 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	rw.WriteString("\r\n")
 	rw.Flush()
-	client := NewConn(conn, rw)
-	h.Conns <- client
-	client.loop()
+	c := NewConn(conn, rw)
+	h.Conns <- c
+	c.start()
 }
 
+// Connection states for websocket connections
+const (
+	CONNECTING = iota
+	OPEN
+	CLOSING
+	CLOSED
+)
+
+// A connection error
+type errConnection struct {
+	code   uint16
+	reason string
+}
+
+func (e *errConnection) Error() string {
+	return fmt.Sprintf("Error %v: %v", e.code, e.reason)
+}
+
+func newErrConnection(code uint16, reason string) (e *errConnection) {
+	e = &errConnection{
+		code:   code,
+		reason: reason,
+	}
+	return
+}
+
+var (
+	errNormalClosure = newErrConnection(statusNormalClosure, "")
+)
+
 type Conn struct {
-	conn               net.Conn
-	clientClose        bool // Has the client sent a close frame
-	expectingContFrame bool // Expecting a continuation frame, if fin wasn't set
-	rw                 *bufio.ReadWriter
-	in                 chan<- io.Reader
-	In                 <-chan io.Reader
-	out                <-chan io.Writer
-	Out                chan<- io.Writer
-	send               chan *frame
+	conn                     net.Conn
+	clientClose              bool // Has the client sent a close frame
+	expectingContFrame       bool // Expecting a continuation frame, if fin wasn't set
+	rw                       *bufio.ReadWriter
+	in                       chan<- io.Reader
+	In                       <-chan io.Reader
+	out                      <-chan io.Writer
+	Out                      chan<- io.Writer
+	send                     chan *frame
+	currWriter               *io.PipeWriter // Current message writer (for fragmented messages)
+	State                    int            // The connection state
+	closeSent, closeRecieved bool           // Log that a close frame has been sent and recieved
+	Cleanly                  bool           // Was the connection closed cleanly?
+	server                   bool           // True if connection is server, false if client
 }
 
 func NewConn(conn net.Conn, rw *bufio.ReadWriter) (c *Conn) {
-	in := make(chan io.Reader)
-	out := make(chan io.Writer)
-	send := make(chan *frame)
+	in := make(chan io.Reader, 0x10)
+	out := make(chan io.Writer, 0x10)
+	send := make(chan *frame, 0x10) // Message buffer
 	c = &Conn{
-		conn: conn,
-		rw:   rw,
-		in:   in,
-		In:   in,
-		out:  out,
-		Out:  out,
-		send: send,
+		conn:   conn,
+		rw:     rw,
+		in:     in,
+		In:     in,
+		out:    out,
+		Out:    out,
+		send:   send,
+		State:  OPEN,
+		server: true,
 	}
 	buf := bytes.NewBufferString("hejsan\n")
-	fh, _ := newFrameHeader(true, opCodeText, int64(buf.Len()), nil)
-	go func() { send <- newFrame(fh, buf) }()
-	go c.sendLoop()
+	buf2 := bytes.NewBufferString("svejsan!")
+	fh, _ := newFrameHeader(false, opCodeText, int64(buf.Len()), nil)
+	fhC, _ := newFrameHeader(true, opCodeContinuation, int64(buf2.Len()), nil)
+	//log.Fatal(fh, fhC, err)
+	go func() {
+		send <- newFrame(fh, buf)
+		send <- newFrame(fhC, buf2)
+	}()
 	return
+}
+
+func (c *Conn) start() {
+	go c.sendLoop()
+	go func() {
+		err := c.router()
+		if err != nil {
+			c.closing()
+			c.destroy(false)
+		}
+		fmt.Println("BLA BLA", err)
+	}()
 }
 
 // Blocking send loop
@@ -157,117 +212,181 @@ func (c *Conn) sendLoop() {
 			c.rw.Flush()
 		}
 	}
-	c.conn.Close()
-	fmt.Println("No more send messages")
+	c.destroy(true)
 }
 
-func (c *Conn) loop() {
-	code := statusNormalClosure
-	reason := ""
-	var (
-		fh  *frameHeader
-		err error
-		w   *io.PipeWriter // Current writer, for fragmented messages
-	)
-NewMessages:
-	for {
-		if fh, err = parseFrameHeader(c.rw); err != nil {
-			// TODO: Proper logging?
-			log.Println("Could not parse frame header", c.conn.RemoteAddr(), err, "Closing websocket")
-			code = statusProtocolError
-			reason = err.Error()
-			break NewMessages
-		}
-		fmt.Println(fh)
-		f := newFrame(fh, c.rw)
-		switch fh.opCode {
+// Randomize a new masking key if client, or no masing if server
+// TODO
+func (c *Conn) mask() (maskingKey []byte) {
+	return nil
+}
 
-		// First, control frames
-		case opCodePing:
-			c.send <- pongFrame // Answer with pong
-			fallthrough         // and...
-		case opCodePong:
-			// Discard payload
-			io.CopyN(ioutil.Discard, c.rw, int64(fh.payloadLength))
-		case opCodeConnectionClose:
-			c.clientClose = true
-			break NewMessages
+// Read and respond to a ping frame
+func (c *Conn) processPing(f *frame) (err error) {
+	var payloadCopy bytes.Buffer
+	_, err = f.readPayloadTo(&payloadCopy)
+	if err != nil {
+		return
+	}
+	pongFrameHeader, _ := newFrameHeader(true, opCodePong, f.Len(), c.mask())
+	pongFrame := newFrame(pongFrameHeader, &payloadCopy)
+	c.send <- pongFrame
+	return
+}
 
-		// Regular frames
-		case opCodeBinary:
-			fallthrough // Currently binary and text are recieved in the same way
-		case opCodeText:
-			if c.expectingContFrame {
-				code = statusProtocolError
-				reason = "Expecting a continuation frame…"
-				break NewMessages
-			}
-			var r *io.PipeReader
-			r, w = io.Pipe()
-			c.in <- r
-			_, err = f.readPayloadTo(w)
-			if err == io.ErrUnexpectedEOF {
-				w.CloseWithError(io.ErrUnexpectedEOF)
-				code = statusProtocolError
-				reason = "End-point interrupted in the middle of message"
-				break NewMessages
-			} else {
-				if f.header.fin {
-					w.Close() // Close the pipe writer with an EOF
-				} else {
-					c.expectingContFrame = true
-				}
-			}
-		case opCodeContinuation:
-			if !c.expectingContFrame {
-				code = statusProtocolError
-				reason = "Unexpected continuation frame"
-				break NewMessages
-			}
-			_, err = f.readPayloadTo(w)
-			if err == io.ErrUnexpectedEOF {
-				w.CloseWithError(io.ErrUnexpectedEOF)
-				code = statusProtocolError
-				reason = "End-point interrupted in the middle of message"
-				break NewMessages
-			} else {
-				if f.header.fin {
-					w.Close() // Close the pipe writer with an EOF
-					c.expectingContFrame = false
-					w = nil
-				} else {
-					c.expectingContFrame = true
-				}
-			}
+// Read and respond to a pong frame
+func (c *Conn) processPong(f *frame) (err error) {
+	_, err = f.readPayloadTo(ioutil.Discard)
+	return
+}
+
+// Process a text frame
+func (c *Conn) processText(f *frame) (err error) {
+	// TODO: Incoming data MUST always be validated by both clients and servers.
+	if c.expectingContFrame {
+		err = newErrConnection(statusProtocolError, "Received unexpected data frame (expecting continuation frame)")
+		return
+	}
+	var r *io.PipeReader
+	r, w := io.Pipe()
+	c.in <- r
+	_, err = f.readPayloadTo(w)
+	if err == io.ErrUnexpectedEOF {
+		w.CloseWithError(io.ErrUnexpectedEOF)
+		return
+	} else {
+		if f.header.fin {
+			w.Close() // Close the pipe writer with an EOF
+		} else {
+			c.currWriter = w
 		}
 	}
-	c.close(code, reason)
+	return
+}
+
+// Read continuation frame into current write stream
+func (c *Conn) processContinuation(f *frame) (err error) {
+	if c.currWriter == nil {
+		err = newErrConnection(statusProtocolError, "Recieved unexpected continuation frame")
+		return
+	}
+	w := c.currWriter
+	_, err = f.readPayloadTo(w)
+	if err == io.ErrUnexpectedEOF {
+		w.CloseWithError(io.ErrUnexpectedEOF)
+		err = newErrConnection(statusProtocolError, "The other end-point closed the TCP connection")
+		return
+	} else {
+		if f.header.fin {
+			w.Close() // Close the pipe writer with an EOF
+			c.currWriter = nil
+			w = nil
+		}
+	}
+	return
+}
+
+// When called, closeReceived = true, c.State = OPEN | CLOSING
+func (c *Conn) processConnectionClose(f *frame) (err error) {
+	c.State = CLOSING
+	_, err = f.readPayloadTo(ioutil.Discard) // TODO
+	if c.closeSent {
+		// Can err affect internal logging?
+		c.destroy(true) // All done, both sent and recieved
+	} else {
+		if err != nil {
+			c.sendClose(newErrConnection(statusProtocolError, "Connection closed before close frame was sent"))
+		} else {
+			c.sendClose(errNormalClosure) // TODO: Mirror
+		}
+	}
+	return
+}
+
+// Close user communication channels
+func (c *Conn) closing() {
+	c.State = CLOSING
+	close(c.in)
+	close(c.Out)
+	if c.currWriter != nil {
+		c.currWriter.CloseWithError(io.ErrUnexpectedEOF)
+		c.currWriter = nil
+	}
 }
 
 // Initiate closing handshake and close underlying TCP connection.
 // Discard all new incoming messages and terminate current outgoing messages.
-func (c *Conn) close(code uint16, reason string) {
-	close(c.in) // Close the channel for new messages
-	closeFrame, err := newCloseFrame(code, reason)
-	if err != nil {
-		log.Fatal("Close frame payload too long")
+func (c *Conn) sendClose(e *errConnection) {
+	if c.closeSent {
+		return
 	}
+	c.closing()
+	closeFrame, _ := newCloseFrame(e)
 	c.send <- closeFrame
 	close(c.send)
-	// Client has not yet sent the closing frame
-	for !c.clientClose {
-		if fh, err := parseFrameHeader(c.rw); err == nil {
-			if fh.opCode == opCodeConnectionClose {
-				c.clientClose = true
-			}
-			// When in closing state, discard the payload
-			// TODO: Read the code and reason for close?
-			io.CopyN(ioutil.Discard, c.rw, int64(fh.payloadLength))
+	c.closeSent = true
+}
+
+// Close TCP connection and set clean flag
+// Destroy does nothing if closing handshake is not complete, unless
+// clean is false, in which case it destroys the connection anyway
+// Can thus be called multiple times
+func (c *Conn) destroy(clean bool) {
+	if (c.closeRecieved && c.closeSent) || !clean {
+		c.State = CLOSED
+		c.Cleanly = clean
+		if c.server || !clean {
+			c.conn.Close()
 		} else {
-			log.Println("The client ", c.conn.RemoteAddr(), " did NOT properly complete the WebSocket closing handshake")
-			break
+			c.conn.SetDeadline(time.Now().Add(time.Second * 5))
 		}
 	}
+}
+
+// Blocking router method for incoming messages
+func (c *Conn) router() (err error) {
+	var f *frame
+	for !c.closeRecieved {
+		f, err = nextFrame(c.rw)
+		// In the end of this loop, the payload must have been read
+		fmt.Println("Incoming: ", f.header)
+
+		if c.closeSent && f.Op() != opCodeConnectionClose {
+			// Waiting for other end sending close frame
+			// Ignore all frames except closing frames
+			if _, err = f.readPayloadTo(ioutil.Discard); err != nil {
+				return
+			} else {
+				continue
+			}
+		}
+
+		switch f.Op() {
+		case opCodePing:
+			err = c.processPing(f)
+		case opCodePong:
+			err = c.processPong(f)
+		case opCodeConnectionClose:
+			err = c.processConnectionClose(f)
+			c.closeRecieved = true
+		case opCodeBinary:
+			fallthrough // Currently binary and text are recieved in the same way
+		case opCodeText:
+			err = c.processText(f)
+		case opCodeContinuation:
+			err = c.processContinuation(f)
+		}
+
+		if err != nil {
+			return
+		}
+	}
+	return
+}
+
+// Close the websocket connection in a normal way
+func (c *Conn) Close() {
+	c.sendClose(errNormalClosure)
 }
 
 // Send a message to the client

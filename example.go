@@ -18,6 +18,7 @@ func main() {
 			for r, ok := <-c.In; ok; r, ok = <-c.In {
 				// Print messages
 				io.Copy(os.Stdout, r)
+				c.Close()
 			}
 			fmt.Println("Client disconnected")
 		}

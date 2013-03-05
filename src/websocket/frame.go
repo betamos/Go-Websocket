@@ -7,13 +7,6 @@ import (
 	"io"
 )
 
-var (
-	pingFrameHeader, _ = newFrameHeader(true, opCodePing, 0, nil)
-	pongFrameHeader, _ = newFrameHeader(true, opCodePong, 0, nil)
-	pingFrame          = newFrame(pingFrameHeader, nil)
-	pongFrame          = newFrame(pongFrameHeader, nil)
-)
-
 type frame struct {
 	header  *frameHeader
 	payload io.Reader
@@ -27,15 +20,40 @@ func newFrame(header *frameHeader, payload io.Reader) (f *frame) {
 	return
 }
 
-func newCloseFrame(code uint16, reason string) (f *frame, err error) {
-	reasonBytes := []byte(reason)
+// Wrapper around parseFrameHeader, returns the same error
+// Doesn't read anything from payload, just the header
+func nextFrame(r io.Reader) (f *frame, err error) {
+	var fh *frameHeader
+	fh, err = parseFrameHeader(r)
+	if err != nil {
+		return
+	}
+	f = newFrame(fh, r)
+	return
+}
+
+// Payload length for this frame
+func (f *frame) Len() int64 {
+	return f.header.payloadLength
+}
+
+// Payload length for this frame
+func (f *frame) Op() (opCode byte) {
+	opCode = f.header.opCode
+	return
+}
+
+// TODO: Reason must be valid UTF-8
+func newCloseFrame(e *errConnection) (f *frame, err error) {
+	reasonBytes := []byte(e.reason)
 	payloadLength := int64(2 + len(reasonBytes))
-	fh, err := newFrameHeader(true, opCodeConnectionClose, payloadLength, nil)
+	var fh *frameHeader
+	fh, err = newFrameHeader(true, opCodeConnectionClose, payloadLength, nil)
 	if err != nil {
 		return
 	}
 	buf := bytes.NewBuffer(make([]byte, 0, payloadLength))
-	binary.Write(buf, binary.BigEndian, code)
+	binary.Write(buf, binary.BigEndian, e.code)
 	buf.Write(reasonBytes)
 	f = &frame{
 		header:  fh,
@@ -48,6 +66,9 @@ func newCloseFrame(code uint16, reason string) (f *frame, err error) {
 // Will mask if f.header.mask is set
 // Err will be io.
 func (f *frame) readPayloadTo(w io.Writer) (n int64, err error) {
+	if f.Len() == 0 { // No payload
+		return
+	}
 	br := bufio.NewReader(f.payload)
 	bw := bufio.NewWriter(w)
 	var c byte
