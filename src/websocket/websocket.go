@@ -72,7 +72,7 @@ type Handler struct {
 
 func NewHandler() (h *Handler) {
 	h = &Handler{
-		Conns: make(chan *Conn),
+		Conns: make(chan *Conn, 0x10),
 	}
 	return
 }
@@ -102,7 +102,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	rw.WriteString("\r\n")
 	rw.Flush()
-	c := NewConn(conn, rw)
+	c := newConn(conn)
 	h.Conns <- c
 	c.start()
 }
@@ -154,13 +154,13 @@ type Conn struct {
 	server                   bool           // True if connection is server, false if client
 }
 
-func NewConn(conn net.Conn, rw *bufio.ReadWriter) (c *Conn) {
+func newConn(conn net.Conn) (c *Conn) {
 	in := make(chan io.Reader, 0x10)
 	out := make(chan io.Writer, 0x10)
 	send := make(chan *frame, 0x10) // Message buffer
 	c = &Conn{
 		conn:   conn,
-		rw:     rw,
+		rw:     bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn)),
 		in:     in,
 		In:     in,
 		out:    out,
@@ -180,7 +180,7 @@ func (c *Conn) start() {
 			c.closing()
 			c.destroy(false)
 		}
-		fmt.Println("BLA BLA", err)
+		fmt.Println("Router err:", err)
 	}()
 }
 
@@ -189,14 +189,14 @@ func (c *Conn) start() {
 // messages can be sent
 func (c *Conn) sendLoop() {
 	var err error
-	for frame, ok := <-c.send; ok; frame, ok = <-c.send {
-		fmt.Println("FRAME: ", frame.header)
-		_, err = c.rw.Write(frame.header.Bytes())
+	for f, ok := <-c.send; ok; f, ok = <-c.send {
+		fmt.Println("OUT: ", f.header)
+		_, err = c.rw.Write(f.header.Bytes())
 		if err != nil {
 			break
 		}
-		if frame.header.payloadLength > 0 {
-			_, err = io.CopyN(c.rw, frame.payload, frame.header.payloadLength) // TODO: Payload length?
+		if f.header.payloadLength > 0 {
+			_, err = io.CopyN(c.rw, f.payload, f.header.payloadLength) // TODO: Payload length?
 			if err != nil {
 				break
 			}
@@ -340,7 +340,11 @@ func (c *Conn) router() (err error) {
 	for !c.closeRecieved {
 		f, err = nextFrame(c.rw)
 		// In the end of this loop, the payload must have been read
-		fmt.Println("Incoming: ", f.header)
+		if err != nil {
+			return
+		}
+
+		fmt.Println("IN: ", f.header)
 
 		if c.closeSent && f.Op() != opCodeConnectionClose {
 			// Waiting for other end sending close frame
