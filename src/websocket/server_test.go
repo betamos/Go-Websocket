@@ -4,7 +4,6 @@ package websocket
 
 import (
 	"bytes"
-	"fmt"
 	"io"
 	"io/ioutil"
 	"net"
@@ -57,8 +56,8 @@ func TestDirectClose(t *testing.T) {
 	if err != nil {
 		t.Error("Couldn't write closing frame")
 	}
-	var buf bytes.Buffer
-	_, err = io.CopyN(&buf, client, int64(len(expected)))
+	buf := new(bytes.Buffer)
+	_, err = io.CopyN(buf, client, int64(len(expected)))
 	if err != nil {
 		t.Errorf("Short read: %v", err)
 	}
@@ -69,7 +68,6 @@ func TestDirectClose(t *testing.T) {
 	client.SetDeadline(time.Now().Add(time.Second))
 	var n int64
 	n, err = io.Copy(ioutil.Discard, client)
-	fmt.Printf("%v copied\n", n)
 	if n != 0 {
 		t.Errorf("Recieved %v excess bytes", n)
 	}
