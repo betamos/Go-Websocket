@@ -146,8 +146,8 @@ type Conn struct {
 	rw                       *bufio.ReadWriter
 	in                       chan<- io.Reader
 	In                       <-chan io.Reader
-	out                      <-chan io.Writer
-	Out                      chan<- io.Writer
+	out                      <-chan io.Reader
+	Out                      chan<- io.Reader
 	send                     chan *frame
 	currWriter               *io.PipeWriter // Current message writer (for fragmented messages)
 	State                    int            // The connection state
@@ -158,7 +158,7 @@ type Conn struct {
 
 func newConn(conn net.Conn) (c *Conn) {
 	in := make(chan io.Reader, 0x10)
-	out := make(chan io.Writer, 0x10)
+	out := make(chan io.Reader, 0x10)
 	send := make(chan *frame, 0x10) // Message buffer
 	c = &Conn{
 		conn:   conn,
@@ -185,6 +185,34 @@ func (c *Conn) start() {
 			c.destroy(false)
 		}
 	}()
+	go c.sendMessageLoop()
+}
+
+// Retrieves messages from c.Out, fragments them and sends them away.
+func (c *Conn) sendMessageLoop() {
+	// Read all
+	var (
+		n   int64
+		max int64 = 128
+		fh  *frameHeader
+		f   *frame
+		fin bool
+		op  byte
+	)
+	for r, ok := <-c.out; ok && c.State == OPEN; r, ok = <-c.out {
+		var err error
+		br := bufio.NewReader(r)
+		op = opCodeText // First frame, always text
+		for err == nil {
+			buf := bytes.NewBuffer(make([]byte, 0, max))
+			n, err = io.CopyN(buf, br, max)
+			fin = err == io.EOF // Last frame
+			fh, _ = newFrameHeader(fin, op, n, nil)
+			f = newFrame(fh, buf)
+			c.send <- f
+			op = opCodeContinuation
+		}
+	}
 }
 
 // Blocking send loop
@@ -300,7 +328,6 @@ func (c *Conn) processConnectionClose(f *frame) (err error) {
 func (c *Conn) closing() {
 	c.State = CLOSING
 	close(c.in)
-	close(c.Out)
 	if c.currWriter != nil {
 		c.currWriter.CloseWithError(io.ErrUnexpectedEOF)
 		c.currWriter = nil
