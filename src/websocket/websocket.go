@@ -390,8 +390,8 @@ func (c *Conn) router() (err error) {
 		case opCodePong:
 			err = c.processPong(f)
 		case opCodeConnectionClose:
-			err = c.processConnectionClose(f)
 			c.closeRecieved = true
+			err = c.processConnectionClose(f)
 		case opCodeBinary:
 			fallthrough // Currently binary and text are recieved in the same way
 		case opCodeText:
