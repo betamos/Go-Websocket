@@ -412,22 +412,6 @@ func (c *Conn) Close() {
 	c.sendClose(errNormalClosure)
 }
 
-// Send a message to the client
-// TODO: Fragmentation, this requires a lot of memory for large messages
-func (c *Conn) Send(p []byte) (n int, err error) {
-	fh := &frameHeader{
-		fin:           true,
-		opCode:        opCodeText,
-		payloadLength: int64(len(p)),
-	}
-	_, err = c.rw.Write(fh.Bytes())
-	if err != nil {
-		return
-	}
-	_, err = c.rw.Write(p)
-	return
-}
-
 func wsClientHandshake(r *http.Request) (secWSAccept string, err error) {
 
 	// Check HTTP version
