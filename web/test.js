@@ -4,11 +4,11 @@ console.log("hej hej");
 var ws = new WebSocket("ws://localhost:8080/myconn")
 
 setTimeout(function() {
-  ws.send("Hej och hå\n")
+  ws.send("Hello from client\n")
 }, 500)
 
 setTimeout(function() {
-  ws.close()
+  //ws.close()
 }, 1000)
 
 ws.onopen = function() {
