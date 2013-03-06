@@ -65,6 +65,8 @@ var opCodeDescriptions = map[byte]string{
 	opCodePong:            "pong",
 }
 
+var Log = log.New(ioutil.Discard, "", log.LstdFlags)
+
 // A websocket handler, implements http.Handler
 type Handler struct {
 	Conns chan *Conn
@@ -81,7 +83,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var status int
 	secWSAccept, err := wsClientHandshake(r)
 	if err != nil {
-		fmt.Println(err)
+		Log.Println(err)
 		w.Header().Set("Sec-WebSocket-Version", strconv.Itoa(secWSVersion))
 		status = http.StatusBadRequest
 	} else {
@@ -173,14 +175,15 @@ func newConn(conn net.Conn) (c *Conn) {
 }
 
 func (c *Conn) start() {
+	Log.Println("Conn started")
 	go c.sendLoop()
 	go func() {
 		err := c.router()
 		if err != nil {
+			Log.Print(err)
 			c.closing()
 			c.destroy(false)
 		}
-		fmt.Println("Router err:", err)
 	}()
 }
 
@@ -190,7 +193,6 @@ func (c *Conn) start() {
 func (c *Conn) sendLoop() {
 	var err error
 	for f, ok := <-c.send; ok; f, ok = <-c.send {
-		fmt.Println("OUT: ", f.header)
 		_, err = c.rw.Write(f.header.Bytes())
 		if err != nil {
 			break
@@ -282,7 +284,7 @@ func (c *Conn) processConnectionClose(f *frame) (err error) {
 	c.State = CLOSING
 	_, err = f.readPayloadTo(ioutil.Discard) // TODO
 	if c.closeSent {
-		// Can err affect internal logging?
+		// TODO: Can err affect internal logging?
 		c.destroy(true) // All done, both sent and recieved
 	} else {
 		if err != nil {
@@ -331,6 +333,7 @@ func (c *Conn) destroy(clean bool) {
 		} else {
 			c.conn.SetDeadline(time.Now().Add(time.Second * 5))
 		}
+		Log.Println("Conn stopped")
 	}
 }
 
@@ -343,8 +346,6 @@ func (c *Conn) router() (err error) {
 		if err != nil {
 			return
 		}
-
-		fmt.Println("IN: ", f.header)
 
 		if c.closeSent && f.Op() != opCodeConnectionClose {
 			// Waiting for other end sending close frame
