@@ -14,7 +14,7 @@ Currently this project aims at providing a well performing WebSocket server,
 and it currently lacks client capabilities. Features include:
 
  * Multiple client connections, recieved asynchronously on a channel
- * Sending and recieving UTF-8 encoded messages
+ * Sending and recieving text messages
 
 License
 -------
